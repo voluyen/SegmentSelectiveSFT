@@ -48,6 +48,13 @@ def parse_args():
         help="Apply chat template to prompt.",
     )
     parser.add_argument("--pipeline_parallel_size", type=int, default=1)
+    parser.add_argument("--gpu_memory_utilization", type=float, default=0.90)
+    # 0 = de vLLM lay max_position_embeddings cua model (1.5B la 131072), qua
+    # thua vi ta chi sinh toi max_tokens_per_call.
+    parser.add_argument("--max_model_len", type=int, default=0)
+    parser.add_argument("--enable_prefix_caching", action="store_true")
+    # logprobs khong duoc dung o dau ngoai SamplingParams -> mac dinh tat.
+    parser.add_argument("--return_logprobs", action="store_true")
     parser.add_argument(
         "--adapt_few_shot",
         action="store_true",
@@ -121,12 +128,17 @@ def setup(args):
         data_list = need_eval_data_list
     
     if args.use_vllm:
-        llm = LLM(
+        llm_kwargs = dict(
             model=args.model_name_or_path,
             tensor_parallel_size=len(available_gpus) // args.pipeline_parallel_size,
             pipeline_parallel_size=args.pipeline_parallel_size,
             trust_remote_code=True,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            enable_prefix_caching=args.enable_prefix_caching,
         )
+        if args.max_model_len > 0:
+            llm_kwargs["max_model_len"] = args.max_model_len
+        llm = LLM(**llm_kwargs)
         tokenizer = None
         if args.apply_chat_template:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -319,7 +331,7 @@ def main(llm, tokenizer, data_name, args):
                         if "qwen" in args.model_name_or_path.lower()
                         else None
                     ),
-                    logprobs=1
+                    logprobs=1 if args.return_logprobs else None,
                 ),
             )
 

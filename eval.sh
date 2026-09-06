@@ -23,6 +23,7 @@
 #   bash eval.sh --tasks "aime24 math500"  # chi vai task
 #   bash eval.sh --n-sampling 1            # 1 mau/cau cho nhanh (mac dinh 32/6)
 #   bash eval.sh --num-test-sample 100     # chi lay 100 cau dau moi task
+#   bash eval.sh --gpu 0,1,2,3 --data-parallel   # 1 task/GPU chay song song
 #   bash eval.sh --gpu 0,1                 # tensor parallel tren 2 GPU
 #   bash eval.sh --max-tokens 16384        # cat ngan sinh cho nhanh
 #   bash eval.sh --overwrite               # cham lai tu dau
@@ -61,6 +62,12 @@ TEMPERATURE="${TEMPERATURE:-0.6}"
 TOP_P="${TOP_P:-1}"
 PROMPT_TYPE="${PROMPT_TYPE:-deepseek-longcot}"
 
+DATA_PARALLEL=0                          # 1 = chia task ra tung GPU chay song song
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"     # KV cache lon hon = nhieu seq dong thoi hon
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"       # rong = de vLLM tu lay tu config model
+PREFIX_CACHING="${PREFIX_CACHING:-1}"    # n mau/cau dung chung prompt -> bo prefill lap
+LOGPROBS="${LOGPROBS:-0}"                # repo khong dung logprobs, bat chi ton them
+
 MODEL=""            # rong = tu suy ra tu WHICH
 WHICH="selective"   # selective | fullsft | base
 DEFAULT_TAG=""
@@ -88,6 +95,11 @@ while [[ $# -gt 0 ]]; do
     --num-test-sample) NUM_TEST_SAMPLE="$2"; shift 2 ;;
     --quick)           QUICK=1; shift ;;
     --gpu)             GPU="$2"; shift 2 ;;
+    --data-parallel|--dp) DATA_PARALLEL=1; shift ;;
+    --gpu-mem-util)    GPU_MEM_UTIL="$2"; shift 2 ;;
+    --max-model-len)   MAX_MODEL_LEN="$2"; shift 2 ;;
+    --no-prefix-caching) PREFIX_CACHING=0; shift ;;
+    --logprobs)        LOGPROBS=1; shift ;;
     --seed)            SEED="$2"; shift 2 ;;
     --max-tokens)      MAX_TOKENS="$2"; shift 2 ;;
     --temperature)     TEMPERATURE="$2"; shift 2 ;;
@@ -96,7 +108,7 @@ while [[ $# -gt 0 ]]; do
     --skip-setup)      SKIP_SETUP=1; shift ;;
     --reinstall)       REINSTALL=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
-    -h|--help)         sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)         sed -n '2,31p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "Tham so khong hop le: $1 (xem --help)" >&2; exit 2 ;;
   esac
 done
@@ -244,26 +256,26 @@ mkdir -p "$LOG_DIR"
 export CUDA_VISIBLE_DEVICES="$GPU"
 export TOKENIZERS_PARALLELISM=false
 
-EXTRA_ARGS=()
-[[ "$OVERWRITE" == "1" ]] && EXTRA_ARGS+=(--overwrite)
+EXTRA_ARGS=(--gpu_memory_utilization "$GPU_MEM_UTIL")
+[[ "$OVERWRITE" == "1" ]]       && EXTRA_ARGS+=(--overwrite)
+[[ "$PREFIX_CACHING" == "1" ]]  && EXTRA_ARGS+=(--enable_prefix_caching)
+[[ "$LOGPROBS" == "1" ]]        && EXTRA_ARGS+=(--return_logprobs)
+[[ -n "$MAX_MODEL_LEN" ]]       && EXTRA_ARGS+=(--max_model_len "$MAX_MODEL_LEN")
+
+IFS=',' read -ra GPU_LIST <<< "$GPU"
+NGPU=${#GPU_LIST[@]}
+if [[ "$DATA_PARALLEL" == "1" && "$NGPU" -lt 2 ]]; then
+  warn "--data-parallel can tu 2 GPU tro len, bo qua."
+  DATA_PARALLEL=0
+fi
 
 LOG_FILE="${LOG_DIR}/eval_${RUN_TAG}.log"
 
-log "Bat dau eval"
-echo "    model      : ${MODEL}"
-echo "    tasks      : ${TASKS}"
-echo "    gpu        : ${GPU} (tensor_parallel_size=$(echo "$GPU" | tr ',' '\n' | grep -c .))"
-echo "    sampling   : t=${TEMPERATURE} top_p=${TOP_P} seed=${SEED} max_tokens=${MAX_TOKENS}"
-echo "    n_sampling : ${N_SAMPLING:-theo tung task (aime/amc 32, con lai 6)}"
-echo "    so cau     : $([[ "$NUM_TEST_SAMPLE" == "-1" ]] && echo "ca test set" || echo "${NUM_TEST_SAMPLE} cau dau")"
-echo "    output     : Eval/${OUTPUT_ROOT}/<task>/${RUN_TAG}"
-echo "    log        : ${LOG_FILE}"
-echo
-
-eval_all() {
+# "aime24:32" hoac chi "aime24" (lay so mau mac dinh cua task do) -> "task:n"
+resolve_tasks() {
+  local spec task n out=""
   for spec in $TASKS; do
-    # Cho phep viet "aime24:32" hoac chi "aime24" (dung mac dinh cua task do).
-    local task="${spec%%:*}" n="${spec#*:}"
+    task="${spec%%:*}"; n="${spec#*:}"
     [[ "$n" == "$task" ]] && n=""
     if [[ -n "$N_SAMPLING" ]]; then
       n="$N_SAMPLING"
@@ -273,11 +285,35 @@ eval_all() {
         *) n=1 ;;
       esac
     fi
+    out="${out}${task}:${n} "
+  done
+  echo "$out"
+}
+RESOLVED_TASKS="$(resolve_tasks)"
 
-    echo "=============================================="
-    echo "Task: ${task}  |  ${n} mau/cau"
-    echo "=============================================="
+log "Bat dau eval"
+echo "    model      : ${MODEL}"
+echo "    tasks      : ${RESOLVED_TASKS}"
+if [[ "$DATA_PARALLEL" == "1" ]]; then
+  echo "    gpu        : ${GPU} (data parallel, ${NGPU} tien trinh, moi tien trinh 1 GPU)"
+else
+  echo "    gpu        : ${GPU} (tensor_parallel_size=${NGPU})"
+fi
+echo "    sampling   : t=${TEMPERATURE} top_p=${TOP_P} seed=${SEED} max_tokens=${MAX_TOKENS}"
+echo "    so cau     : $([[ "$NUM_TEST_SAMPLE" == "-1" ]] && echo "ca test set" || echo "${NUM_TEST_SAMPLE} cau dau")"
+echo "    vllm       : gpu_mem=${GPU_MEM_UTIL} prefix_cache=$([[ "$PREFIX_CACHING" == 1 ]] && echo on || echo off) logprobs=$([[ "$LOGPROBS" == 1 ]] && echo on || echo off) max_model_len=${MAX_MODEL_LEN:-auto}"
+echo "    output     : Eval/${OUTPUT_ROOT}/<task>/${RUN_TAG}"
+echo "    log        : ${LOG_FILE%.log}*.log"
+echo
 
+# Chay tuan tu danh sach "task:n" truyen vao, trong CUDA_VISIBLE_DEVICES hien tai.
+run_tasks() {
+  local spec task n
+  for spec in $1; do
+    task="${spec%%:*}"; n="${spec##*:}"
+    echo "=============================================="
+    echo "Task: ${task}  |  ${n} mau/cau  |  GPU ${CUDA_VISIBLE_DEVICES}"
+    echo "=============================================="
     run python -u math_eval.py \
       --model_name_or_path "${MODEL}" \
       --data_name "${task}" \
@@ -299,7 +335,57 @@ eval_all() {
   done
 }
 
-( cd "${ROOT_DIR}/Eval" && eval_all ) 2>&1 | tee "$LOG_FILE"
+export TOKENIZERS_PARALLELISM=false
+
+if [[ "$DATA_PARALLEL" == "1" ]]; then
+  # Model 1.5B thua suc nam gon 1 GPU, nen chia task ra chay song song lai
+  # nhanh hon tensor parallel (khong ton chi phi giao tiep giua cac GPU).
+  # Chia kieu longest-processing-time: task nang nhat vao GPU dang ranh nhat.
+  ASSIGN="$(python3 - "$ROOT_DIR/data" "$NGPU" $RESOLVED_TASKS <<'PYSPLIT'
+import os, sys
+data_dir, ngpu = sys.argv[1], int(sys.argv[2])
+items = []
+for spec in sys.argv[3:]:
+    task, n = spec.rsplit(":", 1)
+    f = os.path.join(data_dir, task, "test.jsonl")
+    q = sum(1 for _ in open(f)) if os.path.exists(f) else 100
+    items.append((q * int(n), spec))
+items.sort(reverse=True)
+buckets = [[0, []] for _ in range(ngpu)]
+for cost, spec in items:
+    b = min(buckets, key=lambda x: x[0])
+    b[0] += cost
+    b[1].append(spec)
+for load, specs in buckets:
+    print(" ".join(specs))
+PYSPLIT
+)"
+
+  PIDS=(); IDX=0
+  while IFS= read -r line; do
+    g="${GPU_LIST[$IDX]}"; IDX=$((IDX + 1))
+    if [[ -z "$line" ]]; then
+      warn "GPU ${g}: khong duoc chia task nao"
+      continue
+    fi
+    glog="${LOG_FILE%.log}_gpu${g}.log"
+    echo "  GPU ${g} <- ${line}   (log: ${glog})"
+    ( export CUDA_VISIBLE_DEVICES="$g"
+      cd "${ROOT_DIR}/Eval" && run_tasks "$line" ) > "$glog" 2>&1 &
+    PIDS+=($!)
+  done <<< "$ASSIGN"
+  echo
+
+  FAILED=0
+  for pid in ${PIDS[@]+"${PIDS[@]}"}; do
+    wait "$pid" || FAILED=1
+  done
+  cat "${LOG_FILE%.log}"_gpu*.log > "$LOG_FILE" 2>/dev/null || true
+  [[ "$FAILED" == "0" ]] || die "Co tien trinh eval that bai - xem ${LOG_FILE%.log}_gpu*.log"
+else
+  export CUDA_VISIBLE_DEVICES="$GPU"
+  ( cd "${ROOT_DIR}/Eval" && run_tasks "$RESOLVED_TASKS" ) 2>&1 | tee "$LOG_FILE"
+fi
 
 # =============================================================================
 # 4. Tong hop
