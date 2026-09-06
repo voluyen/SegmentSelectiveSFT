@@ -18,6 +18,7 @@
 #   bash eval.sh --base                    # eval model goc, chua finetune
 #   bash eval.sh --full-sft                # eval checkpoint baseline full-CoT
 #   bash eval.sh --model /duong/dan/checkpoint-250
+#   bash eval.sh --model /duong/dan/checkpoint-250 --tag sel_ep5
 #   bash eval.sh --tasks "aime24 math500"  # chi vai task
 #   bash eval.sh --n-sampling 1            # 1 mau/cau cho nhanh (mac dinh 32/6)
 #   bash eval.sh --gpu 0,1                 # tensor parallel tren 2 GPU
@@ -58,6 +59,8 @@ PROMPT_TYPE="${PROMPT_TYPE:-deepseek-longcot}"
 
 MODEL=""            # rong = tu suy ra tu WHICH
 WHICH="selective"   # selective | fullsft | base
+DEFAULT_TAG=""
+RUN_TAG="${RUN_TAG:-}"   # rong = tu dat ten, dung de tach output/log giua cac lan
 OUTPUT_ROOT=""
 OVERWRITE=0
 SKIP_SETUP=0
@@ -69,6 +72,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --env)             ENV_NAME="$2"; shift 2 ;;
     --model)           MODEL="$2"; WHICH="custom"; shift 2 ;;
+    --tag)             RUN_TAG="$2"; shift 2 ;;
     --base)            WHICH="base"; shift ;;
     --full-sft)        WHICH="fullsft"; shift ;;
     --selective)       WHICH="selective"; shift ;;
@@ -86,7 +90,7 @@ while [[ $# -gt 0 ]]; do
     --skip-setup)      SKIP_SETUP=1; shift ;;
     --reinstall)       REINSTALL=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
-    -h|--help)         sed -n '2,27p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)         sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "Tham so khong hop le: $1 (xem --help)" >&2; exit 2 ;;
   esac
 done
@@ -123,19 +127,26 @@ CKPT_BASE="${ROOT_DIR}/SelectiveSFT/checkpoints/$(basename "$BASE_MODEL")_epoch$
 
 case "$WHICH" in
   base)
-    MODEL="$BASE_MODEL"; RUN_TAG="base" ;;
+    MODEL="$BASE_MODEL"; DEFAULT_TAG="base" ;;
   selective)
     MODEL="$(latest_checkpoint "$CKPT_BASE")"
     [[ -n "$MODEL" ]] || die "Khong thay checkpoint trong ${CKPT_BASE} - train truoc, hoac dung --model / --base"
-    RUN_TAG="selective" ;;
+    DEFAULT_TAG="selective" ;;
   fullsft)
     MODEL="$(latest_checkpoint "${CKPT_BASE}_fullsft")"
     [[ -n "$MODEL" ]] || die "Khong thay checkpoint trong ${CKPT_BASE}_fullsft - chay 'bash train.sh --full-sft' truoc"
-    RUN_TAG="fullsft" ;;
+    DEFAULT_TAG="fullsft" ;;
   custom)
     [[ -n "$MODEL" ]] || die "--model rong"
-    RUN_TAG="$(basename "$MODEL")" ;;
+    # basename khong du: hai lan train khac nhau deu co checkpoint-250, se
+    # dung chung thu muc output va de log len nhau. Ghep them ten thu muc cha.
+    DEFAULT_TAG="$(basename "$MODEL")"
+    case "$DEFAULT_TAG" in
+      checkpoint-*) DEFAULT_TAG="$(basename "$(dirname "$MODEL")")_${DEFAULT_TAG}" ;;
+    esac ;;
 esac
+
+[[ -n "$RUN_TAG" ]] || RUN_TAG="${DEFAULT_TAG:-$WHICH}"
 
 # Duong dan phai tuyet doi vi lat nua se cd sang Eval/.
 [[ -d "$MODEL" ]] && MODEL="$(cd "$MODEL" && pwd)"
