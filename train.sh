@@ -7,8 +7,10 @@
 # Script tu lam tat ca:
 #   1. Tao conda env (hoac venv neu khong co conda) - bo qua neu da co
 #   2. Cai SelectiveSFT/requirements.txt      - bo qua neu da cai
-#   3. Do VRAM cua GPU -> tu chon batch size / seq len phu hop
-#   4. Train (wandb da tat, log ra logs/train.log)
+#   3. Train (wandb da tat, log ra logs/train.log)
+#
+# Day la FULL finetuning nen rat ton VRAM. Mac dinh: seq 16384, batch 2,
+# grad_accum 1 - tu chinh bang --batch-size / --grad-accum / --max-seq-length.
 #
 # Tuy chon:
 #   bash train.sh --epochs 5 --lr 1e-5
@@ -36,10 +38,9 @@ EPOCHS="${EPOCHS:-10}"
 LR="${LR:-3e-5}"
 LOG_DIR="${LOG_DIR:-logs}"
 
-# De trong = tu do VRAM roi quyet dinh
-MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-}"
-BATCH_SIZE="${BATCH_SIZE:-}"
-GRAD_ACCUM="${GRAD_ACCUM:-}"
+MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-16384}"
+BATCH_SIZE="${BATCH_SIZE:-2}"
+GRAD_ACCUM="${GRAD_ACCUM:-1}"
 
 SKIP_SETUP=0
 REINSTALL=0
@@ -141,37 +142,7 @@ else
 fi
 
 # =============================================================================
-# 3. Tu chon batch size / seq len theo VRAM
-# =============================================================================
-# train_mask.py chay FULL finetuning (khong phai LoRA) nen rat ton VRAM.
-# Cac nguong duoi la uoc luong an toan cho model 1.5B; chinh tay bang
-# --batch-size / --grad-accum / --max-seq-length neu muon.
-autotune() {
-  local vram_mb=0
-  if command -v nvidia-smi >/dev/null 2>&1; then
-    vram_mb="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits \
-               | sed -n "$((GPU + 1))p" | tr -d ' ')"
-  fi
-  [[ -z "$vram_mb" ]] && vram_mb=0
-
-  local tier
-  if   (( vram_mb >= 75000 )); then tier="80GB"; : "${MAX_SEQ_LENGTH:=16384}"; : "${BATCH_SIZE:=2}"; : "${GRAD_ACCUM:=1}"
-  elif (( vram_mb >= 44000 )); then tier="48GB"; : "${MAX_SEQ_LENGTH:=16384}"; : "${BATCH_SIZE:=1}"; : "${GRAD_ACCUM:=2}"
-  elif (( vram_mb >= 22000 )); then tier="24GB"; : "${MAX_SEQ_LENGTH:=8192}";  : "${BATCH_SIZE:=1}"; : "${GRAD_ACCUM:=4}"
-  elif (( vram_mb > 0 ));      then tier="<24GB"; : "${MAX_SEQ_LENGTH:=4096}"; : "${BATCH_SIZE:=1}"; : "${GRAD_ACCUM:=4}"
-                                    warn "GPU chi co ${vram_mb} MB - full finetuning nhieu kha nang OOM."
-  else                              tier="khong ro"; : "${MAX_SEQ_LENGTH:=16384}"; : "${BATCH_SIZE:=2}"; : "${GRAD_ACCUM:=1}"
-  fi
-
-  log "VRAM GPU ${GPU}: ${vram_mb} MB (nhom ${tier})"
-  echo "    max_seq_length = ${MAX_SEQ_LENGTH}"
-  echo "    batch_size     = ${BATCH_SIZE}  (grad_accum ${GRAD_ACCUM}, effective $((BATCH_SIZE * GRAD_ACCUM)))"
-  echo "    Neu van OOM: bash train.sh --skip-setup --batch-size 1 --max-seq-length 4096"
-}
-autotune
-
-# =============================================================================
-# 4. Train
+# 3. Train
 # =============================================================================
 mkdir -p "$LOG_DIR" "${ROOT_DIR}/SelectiveSFT/checkpoints"
 
@@ -185,6 +156,8 @@ CKPT_DIR="SelectiveSFT/checkpoints/$(basename "$MODEL")_epoch${EPOCHS}_lr${LR}_l
 log "Bat dau training"
 echo "    model      : ${MODEL}"
 echo "    epochs / lr: ${EPOCHS} / ${LR}"
+echo "    seq len    : ${MAX_SEQ_LENGTH}"
+echo "    batch      : ${BATCH_SIZE} x ${GRAD_ACCUM} accum (effective $((BATCH_SIZE * GRAD_ACCUM)))"
 echo "    checkpoint : ${CKPT_DIR}"
 echo "    log        : ${LOG_DIR}/train.log"
 echo
