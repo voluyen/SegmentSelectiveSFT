@@ -17,7 +17,8 @@ REPORT_TO = os.environ.get("REPORT_TO", "none")
 if REPORT_TO == "wandb":
     os.environ.setdefault("WANDB_PROJECT", "selective_sft")
 else:
-    os.environ["WANDB_DISABLED"] = "true"
+    # Khong dat WANDB_DISABLED: transformers da deprecate no va se in canh bao
+    # lap lai moi lan khoi tao Trainer. report_to="none" ben duoi la du.
     os.environ["WANDB_MODE"] = "disabled"
 
 

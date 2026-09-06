@@ -310,8 +310,9 @@ stage_train() {
     export WANDB_PROJECT="$WANDB_PROJECT"
     log "Tracking: wandb (project=${WANDB_PROJECT})"
   else
-    # Chan moi duong dan wandb: bien nao con sot lai cung thanh no-op.
-    export WANDB_DISABLED=true WANDB_MODE=disabled
+    # WANDB_DISABLED da deprecated (spam canh bao moi lan khoi tao Trainer),
+    # report_to=none la du.
+    export WANDB_MODE=disabled
     log "Tracking: tat (report_to=${REPORT_TO}). Loss van in ra stdout + ${LOG_DIR}/train.log"
   fi
 

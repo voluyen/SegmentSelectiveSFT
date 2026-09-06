@@ -161,7 +161,7 @@ mkdir -p "$LOG_DIR" "${ROOT_DIR}/SelectiveSFT/checkpoints"
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 export REPORT_TO=none            # tat wandb
-export WANDB_DISABLED=true WANDB_MODE=disabled
+export WANDB_MODE=disabled     # khong dung WANDB_DISABLED: da deprecated, gay spam canh bao
 export TOKENIZERS_PARALLELISM=false
 
 CKPT_DIR="SelectiveSFT/checkpoints/$(basename "$MODEL")_epoch${EPOCHS}_lr${LR}_len${MAX_SEQ_LENGTH}"
