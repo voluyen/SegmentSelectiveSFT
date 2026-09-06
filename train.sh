@@ -16,7 +16,8 @@
 #   bash train.sh --epochs 5 --lr 1e-5
 #   bash train.sh --gpu 1                  # dung GPU khac
 #   bash train.sh --batch-size 1 --grad-accum 2 --max-seq-length 8192
-#   bash train.sh --group-by-length --no-grad-checkpoint   # nhanh hon, ton VRAM hon
+#   bash train.sh --grad-checkpoint                # bat lai gradient checkpointing neu OOM
+#   bash train.sh --group-by-length                # gom mau cung do dai (khong can khi batch=1)
 #   bash train.sh --reinstall              # cai lai dependency
 #   bash train.sh --skip-setup             # bo qua buoc dung env
 #   bash train.sh --dry-run                # chi in lenh
@@ -40,10 +41,13 @@ LR="${LR:-1e-4}"
 LOG_DIR="${LOG_DIR:-logs}"
 
 MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-16384}"
-BATCH_SIZE="${BATCH_SIZE:-8}"
-GRAD_ACCUM="${GRAD_ACCUM:-4}"
+# Micro-batch 1 = khong co padding nao (khong co mau khac de pad theo).
+# Effective batch van la 1 x 32 = 32, gradient khong doi.
+BATCH_SIZE="${BATCH_SIZE:-1}"
+GRAD_ACCUM="${GRAD_ACCUM:-32}"
 GROUP_BY_LENGTH="${GROUP_BY_LENGTH:-0}"   # 1 = gom mau cung do dai, bo padding thua
-NO_GRAD_CKPT="${NO_GRAD_CKPT:-0}"         # 1 = tat gradient checkpointing (ton VRAM, nhanh hon)
+NO_GRAD_CKPT="${NO_GRAD_CKPT:-1}"         # 1 = tat gradient checkpointing (ton VRAM, nhanh hon)
+                                          #     OOM thi bat lai bang --grad-checkpoint
 
 SKIP_SETUP=0
 REINSTALL=0
@@ -63,6 +67,7 @@ while [[ $# -gt 0 ]]; do
     --grad-accum)      GRAD_ACCUM="$2"; shift 2 ;;
     --group-by-length) GROUP_BY_LENGTH=1; shift ;;
     --no-grad-checkpoint) NO_GRAD_CKPT=1; shift ;;
+    --grad-checkpoint) NO_GRAD_CKPT=0; shift ;;   # bat lai neu OOM
     --skip-setup)      SKIP_SETUP=1; shift ;;
     --reinstall)       REINSTALL=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
