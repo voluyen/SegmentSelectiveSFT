@@ -93,7 +93,7 @@ fi
 # 2. Dung moi truong
 # =============================================================================
 # Danh dau da cai xong de lan chay sau bo qua buoc pip install.
-STAMP=".setup_done_${ENV_NAME}"
+STAMP=".setup_done_${ENV_NAME}_v2"
 
 setup_env() {
   if command -v conda >/dev/null 2>&1; then
@@ -128,9 +128,22 @@ setup_env() {
     log "Cai dependency - lan dau se lau (torch + unsloth, vai GB)"
     run pip install --upgrade pip
     run pip install -r "${ROOT_DIR}/SelectiveSFT/requirements.txt"
+
     # unsloth thuong tu keo bitsandbytes, nhung khong file requirements nao pin no
     # trong khi train_mask.py dung optim="adamw_8bit" -> bao dam co mat.
     run pip install bitsandbytes
+
+    # unsloth keo torchao ma khong ghim version -> pip lay ban moi nhat (0.18+),
+    # ban nay build cho torch > 2.9 nen 'import unsloth' chet voi:
+    #   cannot import name 'ScalingType' from 'torch.nn.functional'
+    # requirements.txt ghim torch==2.9.0 nen phai ha torchao cho khop.
+    log "Ghim torchao<0.18 cho khop torch 2.9.0"
+    run pip install --upgrade --force-reinstall --no-cache-dir "torchao<0.18"
+
+    # Kiem tra import ngay tai buoc setup thay vi de chet luc bat dau train.
+    log "Kiem tra import unsloth"
+    run python -c "import unsloth, torch, torchao; print(f'  torch={torch.__version__} torchao={torchao.__version__} OK')"
+
     [[ "$DRY_RUN" == "1" ]] || touch "$STAMP"
   fi
 }
