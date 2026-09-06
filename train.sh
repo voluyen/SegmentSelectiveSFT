@@ -16,6 +16,7 @@
 #   bash train.sh --epochs 5 --lr 1e-5
 #   bash train.sh --gpu 1                  # dung GPU khac
 #   bash train.sh --batch-size 1 --grad-accum 2 --max-seq-length 8192
+#   bash train.sh --group-by-length --no-grad-checkpoint   # nhanh hon, ton VRAM hon
 #   bash train.sh --reinstall              # cai lai dependency
 #   bash train.sh --skip-setup             # bo qua buoc dung env
 #   bash train.sh --dry-run                # chi in lenh
@@ -35,12 +36,14 @@ MODEL="${MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B}"
 DATA="${DATA:-data/limo/solutions_top70cohe80_lennorm_7B_J50.jsonl}"
 GPU="${GPU:-0}"
 EPOCHS="${EPOCHS:-10}"
-LR="${LR:-3e-5}"
+LR="${LR:-1e-4}"
 LOG_DIR="${LOG_DIR:-logs}"
 
 MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-16384}"
-BATCH_SIZE="${BATCH_SIZE:-2}"
-GRAD_ACCUM="${GRAD_ACCUM:-1}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+GRAD_ACCUM="${GRAD_ACCUM:-4}"
+GROUP_BY_LENGTH="${GROUP_BY_LENGTH:-0}"   # 1 = gom mau cung do dai, bo padding thua
+NO_GRAD_CKPT="${NO_GRAD_CKPT:-0}"         # 1 = tat gradient checkpointing (ton VRAM, nhanh hon)
 
 SKIP_SETUP=0
 REINSTALL=0
@@ -58,6 +61,8 @@ while [[ $# -gt 0 ]]; do
     --max-seq-length)  MAX_SEQ_LENGTH="$2"; shift 2 ;;
     --batch-size)      BATCH_SIZE="$2"; shift 2 ;;
     --grad-accum)      GRAD_ACCUM="$2"; shift 2 ;;
+    --group-by-length) GROUP_BY_LENGTH=1; shift ;;
+    --no-grad-checkpoint) NO_GRAD_CKPT=1; shift ;;
     --skip-setup)      SKIP_SETUP=1; shift ;;
     --reinstall)       REINSTALL=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
@@ -164,6 +169,10 @@ export REPORT_TO=none            # tat wandb
 export WANDB_MODE=disabled     # khong dung WANDB_DISABLED: da deprecated, gay spam canh bao
 export TOKENIZERS_PARALLELISM=false
 
+EXTRA_ARGS=()
+[[ "$GROUP_BY_LENGTH" == "1" ]] && EXTRA_ARGS+=(--group_by_length)
+[[ "$NO_GRAD_CKPT"    == "1" ]] && EXTRA_ARGS+=(--no_gradient_checkpointing)
+
 CKPT_DIR="SelectiveSFT/checkpoints/$(basename "$MODEL")_epoch${EPOCHS}_lr${LR}_len${MAX_SEQ_LENGTH}"
 
 log "Bat dau training"
@@ -171,6 +180,8 @@ echo "    model      : ${MODEL}"
 echo "    epochs / lr: ${EPOCHS} / ${LR}"
 echo "    seq len    : ${MAX_SEQ_LENGTH}"
 echo "    batch      : ${BATCH_SIZE} x ${GRAD_ACCUM} accum (effective $((BATCH_SIZE * GRAD_ACCUM)))"
+echo "    group_by_len : $([[ "$GROUP_BY_LENGTH" == 1 ]] && echo on || echo off)"
+echo "    grad_ckpt    : $([[ "$NO_GRAD_CKPT" == 1 ]] && echo off || echo on)"
 echo "    checkpoint : ${CKPT_DIR}"
 echo "    log        : ${LOG_DIR}/train.log"
 echo
@@ -183,6 +194,7 @@ echo
     --max_seq_length "${MAX_SEQ_LENGTH}" \
     --per_device_train_batch_size "${BATCH_SIZE}" \
     --gradient_accumulation_steps "${GRAD_ACCUM}" \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
     --deepseek \
     --mask \
     --apply_all ) 2>&1 | tee "${LOG_DIR}/train.log"

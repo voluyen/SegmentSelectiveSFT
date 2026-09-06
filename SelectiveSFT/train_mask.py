@@ -43,6 +43,11 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--per_device_train_batch_size", type=int, default=2)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    # Gom cac mau dai tuong duong vao cung batch -> gan nhu khong con padding.
+    parser.add_argument("--group_by_length", action="store_true")
+    # Tat gradient checkpointing: ton VRAM hon nhung khong phai tinh lai
+    # activation trong backward -> nhanh hon dang ke.
+    parser.add_argument("--no_gradient_checkpointing", action="store_true")
     parser.add_argument("--deepseek", action="store_true")
     parser.add_argument("--mask", action="store_true")
     parser.add_argument("--apply_all", action="store_true")
@@ -75,8 +80,11 @@ else:
     response_template = "<｜Assistant｜><think>\n"
 
 model.config.use_cache = False
-model.gradient_checkpointing_enable()
-model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+USE_GC = not args.no_gradient_checkpointing
+if USE_GC:
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+else:
+    model.gradient_checkpointing_disable()
 
 def formatting_prompts_func(examples):
     questions = examples["question"]
@@ -197,7 +205,8 @@ trainer = SFTTrainer(
         overwrite_output_dir=True,
         save_total_limit = 3,
         save_only_model=True,
-        gradient_checkpointing=True,
+        gradient_checkpointing=USE_GC,
+        group_by_length = args.group_by_length,
         max_grad_norm=1.0
     ),
     callbacks=[EarlyStopAtEpochCallback()],
