@@ -135,20 +135,12 @@ setup_env() {
   if [[ -f "$STAMP" && "$REINSTALL" == "0" ]]; then
     log "Dependency da cai truoc do (xoa ${STAMP} hoac dung --reinstall de cai lai)"
   else
+    # requirements-sft.txt = SelectiveSFT/requirements.txt + torchao<0.18
+    # + bitsandbytes. KHONG dung requirements.txt o thu muc goc: do la moi
+    # truong vLLM cho eval/attribution va se xung dot torch/transformers.
     log "Cai dependency - lan dau se lau (torch + unsloth, vai GB)"
     run pip install --upgrade pip
-    run pip install -r "${ROOT_DIR}/SelectiveSFT/requirements.txt"
-
-    # unsloth thuong tu keo bitsandbytes, nhung khong file requirements nao pin no
-    # trong khi train_mask.py dung optim="adamw_8bit" -> bao dam co mat.
-    run pip install bitsandbytes
-
-    # unsloth keo torchao ma khong ghim version -> pip lay ban moi nhat (0.18+),
-    # ban nay build cho torch > 2.9 nen 'import unsloth' chet voi:
-    #   cannot import name 'ScalingType' from 'torch.nn.functional'
-    # requirements.txt ghim torch==2.9.0 nen phai ha torchao cho khop.
-    log "Ghim torchao<0.18 cho khop torch 2.9.0"
-    run pip install --upgrade --force-reinstall --no-cache-dir "torchao<0.18"
+    run pip install -r "${ROOT_DIR}/requirements-sft.txt"
 
     # Kiem tra import ngay tai buoc setup thay vi de chet luc bat dau train.
     log "Kiem tra import unsloth"

@@ -1,0 +1,20 @@
+# Moi truong cho Selective SFT (bash train.sh)
+#
+# KHONG cai chung voi requirements.txt o thu muc goc: file do la moi truong
+# vLLM cho eval/attribution, ghim torch 2.7.1 + transformers 4.56.0 va se
+# xung dot voi cac phien ban duoi day.
+
+datasets==4.3.0
+torch==2.9.0
+transformers==4.57.1
+trl==0.23.0
+unsloth==2025.11.3
+
+# unsloth_zoo khai bao torchao>=0.13.0 khong co chan tren -> pip lay 0.18.0,
+# ban nay build cho torch > 2.9 va lam 'import unsloth' chet voi:
+#   cannot import name 'ScalingType' from 'torch.nn.functional'
+torchao<0.18
+
+# unsloth==2025.11.3 da khai bao bitsandbytes>=0.45.5 la core dep nen pip tu
+# keo ve; ghi ro o day cho chac vi train_mask.py dung optim="adamw_8bit".
+bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0
