@@ -174,7 +174,14 @@ setup_env() {
     fi
     [[ "$DRY_RUN" == "1" ]] || conda activate "$ENV_NAME"
   else
-    warn "Khong co conda, chuyen sang venv."
+    warn "Khong co conda, chuyen sang venv voi python he thong."
+    # Cac pin trong requirements.txt (vllm 0.10, triton 3.3.1, xformers 0.0.31)
+    # chi co wheel den cp312. Python moi hon se phai build tu source va hong.
+    local pyver; pyver="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
+    case "$pyver" in
+      3.9|3.10|3.11|3.12) ;;
+      *) warn "Python he thong la ${pyver} - requirements.txt chi co wheel den 3.12. Nen cai conda hoac dung python 3.11." ;;
+    esac
     local venv_dir=".venv_${ENV_NAME}"
     if [[ ! -d "$venv_dir" ]]; then
       log "Tao venv: ${venv_dir}"

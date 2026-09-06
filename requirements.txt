@@ -112,7 +112,8 @@ opentelemetry-proto==1.26.0
 opentelemetry-sdk==1.26.0
 opentelemetry-semantic-conventions==0.47b0
 opentelemetry-semantic-conventions-ai==0.4.11
-outlines==0.1.11
+# outlines==0.1.11  # BO: vllm 0.10.0 chi can outlines_core==0.2.10 (dong duoi),
+#                    # outlines 0.1.11 lai ghim outlines_core==0.1.26 -> ResolutionImpossible
 outlines_core==0.2.10
 packaging==25.0
 pandas==2.3.1
