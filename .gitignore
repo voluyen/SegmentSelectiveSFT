@@ -3,7 +3,7 @@ logs/
 SelectiveSFT/checkpoints/
 Attribution/processed_data/
 Eval/outputs/
-Eval/outputs_origin/
+Eval/outputs_*/
 outputs/
 
 # File tam do run_pipeline.sh sinh ra (stage split)
