@@ -1,0 +1,16 @@
+# Output cua run_pipeline.sh
+logs/
+SelectiveSFT/checkpoints/
+Attribution/processed_data/
+Eval/outputs/
+Eval/outputs_origin/
+outputs/
+
+# File tam do run_pipeline.sh sinh ra (stage split)
+Attribution/_segment_split_runtime.py
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+wandb/

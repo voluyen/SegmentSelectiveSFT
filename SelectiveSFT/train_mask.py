@@ -12,7 +12,13 @@ import re
 import gc
 pattern = r"(\n\nWait|\n\nAlternatively|\n\nBut wait|\n\nBut alternatively|\n\nBut just to|\n\nHowever|\n\nNot sure|\n\nGoing back|\n\nBacktrack|\n\nTrace back|\n\nAnother)" #|\n\n\*\*Final Answer
 # pattern = r"(\n\nWait|\n\nAlternatively|\n\nBut|\n\nHowever|\n\nHmmm|\n\nHmm|\n\nNot sure|\n\nGoing back|\n\nBacktrack|\n\nTrace back|\n\nAnother)" 
-os.environ["WANDB_PROJECT"] = "***" 
+# Tracking backend: dat REPORT_TO=wandb (kem WANDB_PROJECT) de bat lai.
+REPORT_TO = os.environ.get("REPORT_TO", "none")
+if REPORT_TO == "wandb":
+    os.environ.setdefault("WANDB_PROJECT", "selective_sft")
+else:
+    os.environ["WANDB_DISABLED"] = "true"
+    os.environ["WANDB_MODE"] = "disabled"
 
 
 class EarlyStopAtEpochCallback(TrainerCallback):
@@ -182,7 +188,7 @@ trainer = SFTTrainer(
         output_dir = args.output_dir,
         optim = "adamw_8bit", 
         seed = 3407,
-        report_to = "wandb", 
+        report_to = REPORT_TO,
         run_name = args.run_name,
         save_strategy = "epoch",
         overwrite_output_dir=True,
