@@ -19,8 +19,10 @@
 #   bash eval.sh --full-sft                # eval checkpoint baseline full-CoT
 #   bash eval.sh --model /duong/dan/checkpoint-250
 #   bash eval.sh --model /duong/dan/checkpoint-250 --tag sel_ep5
+#   bash eval.sh --quick                   # kiem nhanh: math500, 100 cau, 1 mau/cau
 #   bash eval.sh --tasks "aime24 math500"  # chi vai task
 #   bash eval.sh --n-sampling 1            # 1 mau/cau cho nhanh (mac dinh 32/6)
+#   bash eval.sh --num-test-sample 100     # chi lay 100 cau dau moi task
 #   bash eval.sh --gpu 0,1                 # tensor parallel tren 2 GPU
 #   bash eval.sh --max-tokens 16384        # cat ngan sinh cho nhanh
 #   bash eval.sh --overwrite               # cham lai tu dau
@@ -50,6 +52,8 @@ MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-16384}"
 TASKS_DEFAULT="aime24:32 amc23:32 math500:6 minerva:6 gpqa:6 olympiad:6"
 TASKS="${TASKS:-}"                  # rong = dung TASKS_DEFAULT
 N_SAMPLING="${N_SAMPLING:-}"        # rong = dung so mau rieng cua tung task
+NUM_TEST_SAMPLE="${NUM_TEST_SAMPLE:-}"   # rong = -1 = ca test set
+QUICK=0
 
 SEED="${SEED:-0}"
 MAX_TOKENS="${MAX_TOKENS:-32768}"
@@ -81,6 +85,8 @@ while [[ $# -gt 0 ]]; do
     --max-seq-length)  MAX_SEQ_LENGTH="$2"; shift 2 ;;
     --tasks)           TASKS="$2"; shift 2 ;;
     --n-sampling)      N_SAMPLING="$2"; shift 2 ;;
+    --num-test-sample) NUM_TEST_SAMPLE="$2"; shift 2 ;;
+    --quick)           QUICK=1; shift ;;
     --gpu)             GPU="$2"; shift 2 ;;
     --seed)            SEED="$2"; shift 2 ;;
     --max-tokens)      MAX_TOKENS="$2"; shift 2 ;;
@@ -90,7 +96,7 @@ while [[ $# -gt 0 ]]; do
     --skip-setup)      SKIP_SETUP=1; shift ;;
     --reinstall)       REINSTALL=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
-    -h|--help)         sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)         sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "Tham so khong hop le: $1 (xem --help)" >&2; exit 2 ;;
   esac
 done
@@ -147,12 +153,22 @@ case "$WHICH" in
 esac
 
 [[ -n "$RUN_TAG" ]] || RUN_TAG="${DEFAULT_TAG:-$WHICH}"
+[[ "$QUICK" == "1" && "$RUN_TAG" != *_quick ]] && RUN_TAG="${RUN_TAG}_quick"
 
 # Duong dan phai tuyet doi vi lat nua se cd sang Eval/.
 [[ -d "$MODEL" ]] && MODEL="$(cd "$MODEL" && pwd)"
 [[ -n "$OUTPUT_ROOT" ]] || OUTPUT_ROOT="outputs_${RUN_TAG}"
 
-[[ -n "$TASKS" ]] || TASKS="$TASKS_DEFAULT"
+# --quick chi dat mac dinh, khong de len cai ban da go tay.
+# Rut so cau + so mau chu KHONG rut --max-tokens: model reasoning bi cat ngan
+# se mat dap an va accuracy tut gia tao.
+if [[ "$QUICK" == "1" ]]; then
+  [[ -n "$TASKS" ]]           || TASKS="math500"
+  [[ -n "$N_SAMPLING" ]]      || N_SAMPLING=1
+  [[ -n "$NUM_TEST_SAMPLE" ]] || NUM_TEST_SAMPLE=100
+fi
+[[ -n "$TASKS" ]]           || TASKS="$TASKS_DEFAULT"
+[[ -n "$NUM_TEST_SAMPLE" ]] || NUM_TEST_SAMPLE=-1
 
 # =============================================================================
 # 2. Dung moi truong
@@ -239,6 +255,7 @@ echo "    tasks      : ${TASKS}"
 echo "    gpu        : ${GPU} (tensor_parallel_size=$(echo "$GPU" | tr ',' '\n' | grep -c .))"
 echo "    sampling   : t=${TEMPERATURE} top_p=${TOP_P} seed=${SEED} max_tokens=${MAX_TOKENS}"
 echo "    n_sampling : ${N_SAMPLING:-theo tung task (aime/amc 32, con lai 6)}"
+echo "    so cau     : $([[ "$NUM_TEST_SAMPLE" == "-1" ]] && echo "ca test set" || echo "${NUM_TEST_SAMPLE} cau dau")"
 echo "    output     : Eval/${OUTPUT_ROOT}/<task>/${RUN_TAG}"
 echo "    log        : ${LOG_FILE}"
 echo
@@ -267,7 +284,7 @@ eval_all() {
       --output_dir "${OUTPUT_ROOT}/${task}/${RUN_TAG}" \
       --split "test" \
       --prompt_type "${PROMPT_TYPE}" \
-      --num_test_sample -1 \
+      --num_test_sample "${NUM_TEST_SAMPLE}" \
       --max_tokens_per_call "${MAX_TOKENS}" \
       --seed "${SEED}" \
       --temperature "${TEMPERATURE}" \
@@ -290,25 +307,33 @@ eval_all() {
 if [[ "$DRY_RUN" != "1" ]]; then
   log "Ket qua"
   python3 - "$ROOT_DIR/Eval/$OUTPUT_ROOT" <<'PY'
-import json, sys, glob, os
+import json, sys, glob, os, re
 root = sys.argv[1]
+# Ten thu muc chua so cau va so mau/cau, nen mot lan chay nhanh va mot lan
+# chay day du nam canh nhau van phan biet duoc.
+PAT = re.compile(r"_(-?\d+)_seed\d+_t[\d.]+_n(\d+)_topp")
 rows = []
 for f in sorted(glob.glob(os.path.join(root, "*", "*", "**", "*_metrics.json"), recursive=True)):
     task = os.path.relpath(f, root).split(os.sep)[0]
+    mo = PAT.search(f)
+    subset, nsamp = (mo.group(1), mo.group(2)) if mo else ("?", "?")
+    subset = "full" if subset == "-1" else subset
     try:
         m = json.load(open(f))
     except Exception:
         continue
-    rows.append((task, m.get("acc"), m.get("num_samples"), m.get("time_use_in_minite")))
+    rows.append((task, subset, nsamp, m.get("acc"), m.get("num_samples"),
+                 m.get("time_use_in_minite")))
 if not rows:
     print("  (chua co metrics.json nao trong %s)" % root)
 else:
-    print("  %-12s %8s %10s %10s" % ("task", "acc", "n_samples", "time"))
-    for t, a, n, tm in rows:
-        print("  %-12s %8s %10s %10s" % (t, f"{a:.1f}" if isinstance(a, (int, float)) else a, n, tm))
-    accs = [a for _, a, _, _ in rows if isinstance(a, (int, float))]
+    hdr = "  %-12s %7s %4s %8s %10s %8s"
+    print(hdr % ("task", "subset", "n", "acc", "num_samples", "time"))
+    for t, sub, ns, a, n, tm in rows:
+        print(hdr % (t, sub, ns, f"{a:.1f}" if isinstance(a, (int, float)) else a, n, tm))
+    accs = [a for _, _, _, a, _, _ in rows if isinstance(a, (int, float))]
     if accs:
-        print("  %-12s %8.1f" % ("TRUNG BINH", sum(accs) / len(accs)))
+        print(hdr % ("TRUNG BINH", "", "", "%.1f" % (sum(accs) / len(accs)), "", ""))
 PY
 fi
 
