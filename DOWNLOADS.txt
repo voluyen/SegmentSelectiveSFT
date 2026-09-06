@@ -1,11 +1,1 @@
-CAN TAI VE
-==========
-
-BAT BUOC
-  deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B      3.56 GB    train
-
-TUY CHON (chi khi tu chay lai attribution / sinh CoT / train 7B)
-  deepseek-ai/DeepSeek-R1-Distill-Qwen-7B       15.24 GB
-
-    hf download deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
-    hf download deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B      3.56 GB    train
