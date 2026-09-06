@@ -9,6 +9,10 @@ outputs/
 # File tam do run_pipeline.sh sinh ra (stage split)
 Attribution/_segment_split_runtime.py
 
+# Moi truong / danh dau cai dat cua train.sh
+.venv_*/
+.setup_done_*
+
 # Python
 __pycache__/
 *.py[cod]

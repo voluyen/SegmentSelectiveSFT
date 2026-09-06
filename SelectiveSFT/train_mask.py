@@ -40,6 +40,8 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=2e-5)
     parser.add_argument("--max_seq_length", type=int, default=16384) #16384 32768
     parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=2)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--deepseek", action="store_true")
     parser.add_argument("--mask", action="store_true")
     parser.add_argument("--apply_all", action="store_true")
@@ -176,8 +178,8 @@ trainer = SFTTrainer(
         max_seq_length = args.max_seq_length,
         remove_unused_columns = False,
         dataset_kwargs = {"skip_prepare_dataset": True},
-        per_device_train_batch_size = 2,
-        gradient_accumulation_steps = 1,
+        per_device_train_batch_size = args.per_device_train_batch_size,
+        gradient_accumulation_steps = args.gradient_accumulation_steps,
         warmup_ratio = 0.05,
         num_train_epochs = args.epochs, 
         learning_rate = args.learning_rate,
