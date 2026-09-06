@@ -390,37 +390,75 @@ fi
 # =============================================================================
 # 4. Tong hop
 # =============================================================================
+SUMMARY_JSON="${ROOT_DIR}/Eval/${OUTPUT_ROOT}/summary.json"
+
 if [[ "$DRY_RUN" != "1" ]]; then
   log "Ket qua"
-  python3 - "$ROOT_DIR/Eval/$OUTPUT_ROOT" <<'PY'
-import json, sys, glob, os, re
-root = sys.argv[1]
+  META="$(printf '{"tag":"%s","model":"%s","decoding":"%s","temperature":%s,"top_p":%s,"seed":%s,"max_tokens":%s,"num_test_sample":%s,"prompt_type":"%s"}' \
+    "$RUN_TAG" "$MODEL" "$([[ "$TEMPERATURE" == "0" ]] && echo greedy || echo sampling)" \
+    "$TEMPERATURE" "$TOP_P" "$SEED" "$MAX_TOKENS" "$NUM_TEST_SAMPLE" "$PROMPT_TYPE")"
+
+  python3 - "$ROOT_DIR/Eval/$OUTPUT_ROOT" "$SUMMARY_JSON" "$META" <<'PYSUM'
+import json, sys, glob, os, re, datetime
+
+root, out_path, meta = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+
 # Ten thu muc chua so cau va so mau/cau, nen mot lan chay nhanh va mot lan
 # chay day du nam canh nhau van phan biet duoc.
-PAT = re.compile(r"_(-?\d+)_seed\d+_t[\d.]+_n(\d+)_topp")
+PAT = re.compile(r"_(-?\d+)_seed(\d+)_t([\d.]+)_n(\d+)_topp")
+
 rows = []
 for f in sorted(glob.glob(os.path.join(root, "*", "*", "**", "*_metrics.json"), recursive=True)):
     task = os.path.relpath(f, root).split(os.sep)[0]
     mo = PAT.search(f)
-    subset, nsamp = (mo.group(1), mo.group(2)) if mo else ("?", "?")
-    subset = "full" if subset == "-1" else subset
     try:
         m = json.load(open(f))
     except Exception:
         continue
-    rows.append((task, subset, nsamp, m.get("acc"), m.get("num_samples"),
-                 m.get("time_use_in_minite")))
+    rows.append({
+        "task": task,
+        "num_test_sample": (int(mo.group(1)) if mo else None),
+        "seed": (int(mo.group(2)) if mo else None),
+        "temperature": (float(mo.group(3)) if mo else None),
+        "n_sampling": (int(mo.group(4)) if mo else None),
+        "acc": m.get("acc"),
+        "num_samples": m.get("num_samples"),
+        "empty_samples": m.get("empty_samples"),
+        "timeout_samples": m.get("timeout_samples"),
+        "time_use_in_second": m.get("time_use_in_second"),
+        "metrics_file": os.path.relpath(f, root),
+    })
+
+accs = [r["acc"] for r in rows if isinstance(r["acc"], (int, float))]
+summary = {
+    "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    **meta,
+    "tasks": {r["task"]: r["acc"] for r in rows},
+    "average_acc": (round(sum(accs) / len(accs), 2) if accs else None),
+    "results": rows,
+}
+
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
+with open(out_path, "w") as fh:
+    json.dump(summary, fh, indent=2, ensure_ascii=False)
+
 if not rows:
     print("  (chua co metrics.json nao trong %s)" % root)
 else:
     hdr = "  %-12s %7s %4s %8s %10s %8s"
     print(hdr % ("task", "subset", "n", "acc", "num_samples", "time"))
-    for t, sub, ns, a, n, tm in rows:
-        print(hdr % (t, sub, ns, f"{a:.1f}" if isinstance(a, (int, float)) else a, n, tm))
-    accs = [a for _, _, _, a, _, _ in rows if isinstance(a, (int, float))]
+    for r in rows:
+        sub = "full" if r["num_test_sample"] == -1 else r["num_test_sample"]
+        t = r["time_use_in_second"]
+        print(hdr % (r["task"], sub, r["n_sampling"],
+                     "%.1f" % r["acc"] if isinstance(r["acc"], (int, float)) else r["acc"],
+                     r["num_samples"],
+                     "%d:%02d" % (t // 60, t % 60) if isinstance(t, (int, float)) else "-"))
     if accs:
         print(hdr % ("TRUNG BINH", "", "", "%.1f" % (sum(accs) / len(accs)), "", ""))
-PY
+print()
+print("  JSON: %s" % out_path)
+PYSUM
 fi
 
-log "Xong. Output: Eval/${OUTPUT_ROOT}  |  Log: ${LOG_FILE}"
+log "Xong. Output: Eval/${OUTPUT_ROOT}  |  JSON: ${SUMMARY_JSON}  |  Log: ${LOG_FILE}"
