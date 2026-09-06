@@ -18,6 +18,7 @@
 #   bash train.sh --batch-size 1 --grad-accum 2 --max-seq-length 8192
 #   bash train.sh --grad-checkpoint                # bat lai gradient checkpointing neu OOM
 #   bash train.sh --group-by-length                # gom mau cung do dai (khong can khi batch=1)
+#   bash train.sh --full-sft               # baseline: SFT tren TOAN BO long CoT (khong mask)
 #   bash train.sh --reinstall              # cai lai dependency
 #   bash train.sh --skip-setup             # bo qua buoc dung env
 #   bash train.sh --dry-run                # chi in lenh
@@ -48,6 +49,10 @@ GRAD_ACCUM="${GRAD_ACCUM:-32}"
 GROUP_BY_LENGTH="${GROUP_BY_LENGTH:-0}"   # 1 = gom mau cung do dai, bo padding thua
 NO_GRAD_CKPT="${NO_GRAD_CKPT:-1}"         # 1 = tat gradient checkpointing (ton VRAM, nhanh hon)
                                           #     OOM thi bat lai bang --grad-checkpoint
+# 0 = selective SFT (chi hoc segment duoc chon) - mac dinh, dung cua paper.
+# 1 = long-CoT SFT thuong: hoc toan bo response. Checkpoint/log rieng,
+#     khong de len ban selective.
+FULL_SFT="${FULL_SFT:-0}"
 
 SKIP_SETUP=0
 REINSTALL=0
@@ -68,10 +73,12 @@ while [[ $# -gt 0 ]]; do
     --group-by-length) GROUP_BY_LENGTH=1; shift ;;
     --no-grad-checkpoint) NO_GRAD_CKPT=1; shift ;;
     --grad-checkpoint) NO_GRAD_CKPT=0; shift ;;   # bat lai neu OOM
+    --full-sft)        FULL_SFT=1; shift ;;
+    --selective)       FULL_SFT=0; shift ;;
     --skip-setup)      SKIP_SETUP=1; shift ;;
     --reinstall)       REINSTALL=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
-    -h|--help)         sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)         sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "Tham so khong hop le: $1 (xem --help)" >&2; exit 2 ;;
   esac
 done
@@ -170,9 +177,24 @@ EXTRA_ARGS=()
 [[ "$GROUP_BY_LENGTH" == "1" ]] && EXTRA_ARGS+=(--group_by_length)
 [[ "$NO_GRAD_CKPT"    == "1" ]] && EXTRA_ARGS+=(--no_gradient_checkpointing)
 
-CKPT_DIR="SelectiveSFT/checkpoints/$(basename "$MODEL")_epoch${EPOCHS}_lr${LR}_len${MAX_SEQ_LENGTH}"
+# Khong co --mask thi train_mask.py supervise toan bo response = long-CoT SFT
+# thuong. Suffix _fullsft do train_mask.py tu them vao output_dir.
+if [[ "$FULL_SFT" == "1" ]]; then
+  MASK_ARGS=()
+  MODE_NAME="full-CoT SFT (baseline, khong mask)"
+  CKPT_SUFFIX="_fullsft"
+  LOG_FILE="${LOG_DIR}/train_fullsft.log"
+else
+  MASK_ARGS=(--mask --apply_all)
+  MODE_NAME="selective SFT (chi segment duoc chon)"
+  CKPT_SUFFIX=""
+  LOG_FILE="${LOG_DIR}/train.log"
+fi
+
+CKPT_DIR="SelectiveSFT/checkpoints/$(basename "$MODEL")_epoch${EPOCHS}_lr${LR}_len${MAX_SEQ_LENGTH}${CKPT_SUFFIX}"
 
 log "Bat dau training"
+echo "    mode       : ${MODE_NAME}"
 echo "    model      : ${MODEL}"
 echo "    epochs / lr: ${EPOCHS} / ${LR}"
 echo "    seq len    : ${MAX_SEQ_LENGTH}"
@@ -180,7 +202,7 @@ echo "    batch      : ${BATCH_SIZE} x ${GRAD_ACCUM} accum (effective $((BATCH_S
 echo "    group_by_len : $([[ "$GROUP_BY_LENGTH" == 1 ]] && echo on || echo off)"
 echo "    grad_ckpt    : $([[ "$NO_GRAD_CKPT" == 1 ]] && echo off || echo on)"
 echo "    checkpoint : ${CKPT_DIR}"
-echo "    log        : ${LOG_DIR}/train.log"
+echo "    log        : ${LOG_FILE}"
 echo
 
 ( cd "${ROOT_DIR}/SelectiveSFT" && run python -u train_mask.py \
@@ -193,8 +215,7 @@ echo
     --gradient_accumulation_steps "${GRAD_ACCUM}" \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
     --deepseek \
-    --mask \
-    --apply_all ) 2>&1 | tee "${LOG_DIR}/train.log"
+    ${MASK_ARGS[@]+"${MASK_ARGS[@]}"} ) 2>&1 | tee "${LOG_FILE}"
 
 log "Xong. Checkpoint: ${CKPT_DIR}"
 echo "De eval: sua MODEL_PATH trong Eval/run_eval.sh tro vao checkpoint tren, roi 'cd Eval && bash run_eval.sh'"

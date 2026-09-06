@@ -79,6 +79,12 @@ else:
     instruction_template = "<｜begin▁of▁sentence｜><｜User｜>"
     response_template = "<｜Assistant｜><think>\n"
 
+# Khong --mask = long-CoT SFT thuong (supervise ca response). Doi ten thu muc
+# de checkpoint baseline khong de len ban selective.
+if not args.mask:
+    args.output_dir += "_fullsft"
+    args.run_name += "_fullsft"
+
 model.config.use_cache = False
 USE_GC = not args.no_gradient_checkpointing
 if USE_GC:
