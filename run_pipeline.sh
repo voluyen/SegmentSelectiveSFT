@@ -134,7 +134,10 @@ need_file() {
   [[ -f "$1" ]] || die "Thieu file: $1 (chay stage truoc do da chua?)"
 }
 
-trap 'die "Pipeline dung tai dong $LINENO"' ERR
+# Moi stage chay trong subshell, ma set -E cho subshell thua ke ERR trap, nen
+# truoc day mot loi in ra ba dong [ERROR] chong len nhau che mat loi that.
+TOP_PID=$$
+trap 'if [[ "$BASHPID" == "$TOP_PID" ]]; then die "Pipeline dung tai dong $LINENO"; fi' ERR
 
 mkdir -p "$LOG_DIR"
 
@@ -144,7 +147,12 @@ mkdir -p "$LOG_DIR"
 activate_env() {
   # Kich hoat conda env o cap top-level (moi stage chay trong subshell nen
   # activate ben trong stage se khong con hieu luc o stage sau).
-  command -v conda >/dev/null 2>&1 || { warn "Khong tim thay 'conda', dung python hien tai: $(command -v python || echo none)"; return 0; }
+  if ! command -v conda >/dev/null 2>&1; then
+    [[ "${ALLOW_SYSTEM_PYTHON:-0}" == "1" ]] || die "Khong tim thay 'conda'.
+      Dat ALLOW_SYSTEM_PYTHON=1 neu co y dung python hien tai: $(command -v python || echo none)"
+    warn "Dung python hien tai: $(command -v python || echo none)"
+    return 0
+  fi
   local conda_base; conda_base="$(conda info --base)"
   # shellcheck disable=SC1091
   source "${conda_base}/etc/profile.d/conda.sh"
@@ -152,7 +160,13 @@ activate_env() {
     log "Kich hoat conda env '${CONDA_ENV}'"
     conda activate "$CONDA_ENV"
   else
-    warn "Chua co conda env '${CONDA_ENV}'. Chay stage 'setup' de tao."
+    # Truoc day chi warn roi chay tiep bang python dang co - dan den loi kho
+    # hieu tan sau trong thu vien (vi du numpy/sklearn ABI cua env he thong).
+    [[ "${ALLOW_SYSTEM_PYTHON:-0}" == "1" ]] || die "Chua co conda env '${CONDA_ENV}'.
+      Tao no:              bash run_pipeline.sh --stages setup
+      Hoac dung env khac:  bash run_pipeline.sh --env <ten_env> ...
+      Hoac co y dung python hien tai: ALLOW_SYSTEM_PYTHON=1 bash run_pipeline.sh ..."
+    warn "Chua co env '${CONDA_ENV}', dung python hien tai (ALLOW_SYSTEM_PYTHON=1)."
   fi
 }
 
