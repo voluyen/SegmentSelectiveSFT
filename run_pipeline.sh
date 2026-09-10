@@ -136,8 +136,11 @@ need_file() {
 
 # Moi stage chay trong subshell, ma set -E cho subshell thua ke ERR trap, nen
 # truoc day mot loi in ra ba dong [ERROR] chong len nhau che mat loi that.
+# BASHPID chi co tu bash 4.0; bash 3.2 (mac dinh cua macOS) khong co, va set -u
+# bien viec doc no thanh loi chi mang lam trap nuot mat thong bao. Dang :- nay
+# thoai lui ve hanh vi cu tren bash 3.2 thay vi hong.
 TOP_PID=$$
-trap 'if [[ "$BASHPID" == "$TOP_PID" ]]; then die "Pipeline dung tai dong $LINENO"; fi' ERR
+trap 'if [[ "${BASHPID:-$TOP_PID}" == "$TOP_PID" ]]; then die "Pipeline dung tai dong $LINENO"; fi' ERR
 
 mkdir -p "$LOG_DIR"
 
