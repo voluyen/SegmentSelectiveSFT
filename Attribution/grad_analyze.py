@@ -274,11 +274,21 @@ if __name__ == "__main__":
                     si += 1
                 token_seg.append(si)
 
+            # Mot luot duy nhat qua token thay vi quet lai ca mang cho tung
+            # segment: chia "\n\n" cho 100-500 segment tren vai nghin token nen
+            # vong lap long la O(segment x token), cham gap ~100 lan.
+            first_tok, last_tok = {}, {}
+            for i, sk in enumerate(token_seg):
+                if sk < 0:
+                    continue
+                if sk not in first_tok:
+                    first_tok[sk] = i
+                last_tok[sk] = i
+
             assistant_token_spans = []
             for k in range(len(pred_thoughts)):
-                idxs = [i for i, sk in enumerate(token_seg) if sk == k]
-                if idxs:
-                    assistant_token_spans.append((idxs[0], idxs[-1] + 1))
+                if k in first_tok:
+                    assistant_token_spans.append((first_tok[k], last_tok[k] + 1))
                 else:
                     # Segment khong chiem token nao -> span rong, diem IG = 0.
                     assistant_token_spans.append((0, 0))
