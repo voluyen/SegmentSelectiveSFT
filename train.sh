@@ -39,6 +39,10 @@ cd "$ROOT_DIR"
 # =============================================================================
 # Cau hinh mac dinh
 # =============================================================================
+# Mac dinh KHONG tu dung moi truong: dung thang python dang active. Nhieu cloud
+# studio da co san env day du va khong co lenh 'conda'. Dat USE_CONDA=1 (hoac
+# --use-conda) de quay lai kieu tao conda env / venv rieng.
+USE_CONDA="${USE_CONDA:-0}"
 ENV_NAME="${ENV_NAME:-ssft_train}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 MODEL="${MODEL:-Qwen/Qwen2.5-7B-Instruct}"
@@ -90,7 +94,9 @@ DRY_RUN="${DRY_RUN:-0}"
 # =============================================================================
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --env)             ENV_NAME="$2"; shift 2 ;;
+    --env)             ENV_NAME="$2"; USE_CONDA=1; shift 2 ;;
+    --use-conda)       USE_CONDA=1; shift ;;
+    --no-conda)        USE_CONDA=0; shift ;;
     --model)           MODEL="$2"; shift 2 ;;
     --data)            DATA="$2"; shift 2 ;;
     --gpu)             GPU="$2"; shift 2 ;;
@@ -155,6 +161,17 @@ fi
 STAMP=".setup_done_${ENV_NAME}_v2"
 
 setup_env() {
+  if [[ "$USE_CONDA" != "1" ]]; then
+    log "Dung python dang active: $(command -v python || command -v python3 || echo none)"
+    if [[ "$REINSTALL" == "1" ]]; then
+      log "Cai lai dependency vao chinh python dang active (--reinstall)"
+      run pip install -r "${ROOT_DIR}/requirements-sft.txt"
+    else
+      log "Gia dinh moi truong da du goi. Them --reinstall de cai lai, hoac --use-conda de dung env rieng."
+    fi
+    return 0
+  fi
+
   if command -v conda >/dev/null 2>&1; then
     local conda_base; conda_base="$(conda info --base)"
     # shellcheck disable=SC1091

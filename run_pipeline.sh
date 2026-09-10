@@ -31,6 +31,10 @@ cd "$ROOT_DIR"
 STAGES="${STAGES:-prep,split,ig,segments,train}"
 
 # --- Moi truong ---
+# Mac dinh KHONG dung conda: dung thang python dang active. Nhieu cloud studio
+# da co san moi truong day du va khong co lenh 'conda' tren PATH.
+# Dat USE_CONDA=1 (hoac --use-conda) de quay lai kieu tao/kich hoat conda env.
+USE_CONDA="${USE_CONDA:-0}"
 CONDA_ENV="${CONDA_ENV:-selective_sft}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 
@@ -85,7 +89,9 @@ LOG_DIR="${LOG_DIR:-logs}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stages)          STAGES="$2"; shift 2 ;;
-    --env)             CONDA_ENV="$2"; shift 2 ;;
+    --env)             CONDA_ENV="$2"; USE_CONDA=1; shift 2 ;;
+    --use-conda)       USE_CONDA=1; shift ;;
+    --no-conda)        USE_CONDA=0; shift ;;
     --attr-model)      ATTR_MODEL="$2"; shift 2 ;;
     --train-model)     TRAIN_MODEL="$2"; shift 2 ;;
     --cot-model)       COT_MODEL="$2"; shift 2 ;;
@@ -152,14 +158,15 @@ mkdir -p "$LOG_DIR"
 # STAGE: setup
 # =============================================================================
 activate_env() {
-  # Kich hoat conda env o cap top-level (moi stage chay trong subshell nen
-  # activate ben trong stage se khong con hieu luc o stage sau).
-  if ! command -v conda >/dev/null 2>&1; then
-    [[ "${ALLOW_SYSTEM_PYTHON:-0}" == "1" ]] || die "Khong tim thay 'conda'.
-      Dat ALLOW_SYSTEM_PYTHON=1 neu co y dung python hien tai: $(command -v python || echo none)"
-    warn "Dung python hien tai: $(command -v python || echo none)"
+  if [[ "$USE_CONDA" != "1" ]]; then
+    log "Dung python dang active: $(command -v python || command -v python3 || echo none)"
     return 0
   fi
+
+  # Kich hoat conda env o cap top-level (moi stage chay trong subshell nen
+  # activate ben trong stage se khong con hieu luc o stage sau).
+  command -v conda >/dev/null 2>&1 || die "USE_CONDA=1 nhung khong tim thay lenh 'conda'.
+      Bo --use-conda de dung python dang active."
   local conda_base; conda_base="$(conda info --base)"
   # shellcheck disable=SC1091
   source "${conda_base}/etc/profile.d/conda.sh"
@@ -167,28 +174,32 @@ activate_env() {
     log "Kich hoat conda env '${CONDA_ENV}'"
     conda activate "$CONDA_ENV"
   else
-    # Truoc day chi warn roi chay tiep bang python dang co - dan den loi kho
-    # hieu tan sau trong thu vien (vi du numpy/sklearn ABI cua env he thong).
-    [[ "${ALLOW_SYSTEM_PYTHON:-0}" == "1" ]] || die "Chua co conda env '${CONDA_ENV}'.
-      Tao no:              bash run_pipeline.sh --stages setup
+    # Khong im lang chay tiep bang python khac: se chet tan sau trong thu vien
+    # voi loi kho lan ra nguyen nhan (vi du numpy/sklearn ABI lech).
+    die "Chua co conda env '${CONDA_ENV}'.
+      Tao no:              bash run_pipeline.sh --use-conda --stages setup
       Hoac dung env khac:  bash run_pipeline.sh --env <ten_env> ...
-      Hoac co y dung python hien tai: ALLOW_SYSTEM_PYTHON=1 bash run_pipeline.sh ..."
-    warn "Chua co env '${CONDA_ENV}', dung python hien tai (ALLOW_SYSTEM_PYTHON=1)."
+      Hoac dung python dang active: bo --use-conda"
   fi
 }
 
 stage_setup() {
   banner "STAGE 0/6 - Environment setup"
 
-  if command -v conda >/dev/null 2>&1; then
-    if conda env list | awk '{print $1}' | grep -qx "$CONDA_ENV"; then
-      log "Conda env '${CONDA_ENV}' da ton tai."
+  if [[ "$USE_CONDA" == "1" ]]; then
+    if command -v conda >/dev/null 2>&1; then
+      if conda env list | awk '{print $1}' | grep -qx "$CONDA_ENV"; then
+        log "Conda env '${CONDA_ENV}' da ton tai."
+      else
+        log "Tao conda env '${CONDA_ENV}' (python ${PYTHON_VERSION})"
+        run conda create -y -n "$CONDA_ENV" "python=${PYTHON_VERSION}"
+      fi
     else
-      log "Tao conda env '${CONDA_ENV}' (python ${PYTHON_VERSION})"
-      run conda create -y -n "$CONDA_ENV" "python=${PYTHON_VERSION}"
+      die "USE_CONDA=1 nhung khong tim thay lenh 'conda'."
     fi
   else
-    warn "Khong tim thay 'conda'. Cai dat truc tiep vao python hien tai."
+    warn "Cai dat truc tiep vao python dang active: $(command -v python || command -v python3 || echo none)
+      Neu moi truong da du goi thi bo qua stage 'setup' hoan toan."
   fi
 
   activate_env
@@ -359,9 +370,14 @@ stage_train() {
   fi
 
   # Goi train.sh de chi co MOT noi dinh nghia hyperparameter mac dinh.
-  # Khong truyen --skip-setup: train.sh phai tu kich hoat env ssft_train cua no,
-  # khong dung nho env dang active cua pipeline (torch/vllm khac phien ban).
+  # USE_CONDA=1: de train.sh tu dung env ssft_train cua no (torch/vllm khac
+  # phien ban voi env attribution). USE_CONDA=0: moi truong da san sang, khong
+  # dung them env nao nua.
+  TRAIN_ENV_ARGS=()
+  [[ "$USE_CONDA" == "1" ]] || TRAIN_ENV_ARGS+=(--skip-setup)
+
   ( run bash "${ROOT_DIR}/train.sh" \
+      ${TRAIN_ENV_ARGS[@]+"${TRAIN_ENV_ARGS[@]}"} \
       --model "${TRAIN_MODEL}" \
       --data "${TRAINING_FILE}" \
       --gpu "${GPU_TRAIN}" \
@@ -379,6 +395,7 @@ stage_train() {
 banner "Segment-Selective SFT pipeline (khong bao gom Eval)"
 cat <<EOF
   Stages       : ${STAGES}
+  Moi truong   : $([[ "$USE_CONDA" == "1" ]] && echo "conda env ${CONDA_ENV}" || echo "python dang active")
   Dataset      : ${HF_DATASET}  (segment mode: ${SEGMENT_MODE})
   Attr model   : ${ATTR_MODEL}   (GPU ${GPU_ATTR})
   Train model  : ${TRAIN_MODEL}  (GPU ${GPU_TRAIN})

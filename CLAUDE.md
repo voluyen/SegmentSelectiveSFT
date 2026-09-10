@@ -28,8 +28,14 @@ This is the single most important constraint. Never install both requirement set
 | `ssft_eval` | `requirements.txt` (root) + `Eval/latex2sympy` editable | torch 2.7.1, transformers 4.56.0, vllm 0.10.0 | `eval.sh`, attribution stages, CoT generation |
 
 `peft` lives only in the train env, so **LoRA merging must run there**, not in the eval env.
-`run_pipeline.sh`'s `setup` stage builds only the eval-side env (`selective_sft`); its `train` stage
-shells out to `train.sh`, which manages `ssft_train` itself.
+
+**All three wrappers default to `USE_CONDA=0` — they use whatever Python is already active and build
+nothing.** That suits managed cloud environments (Lightning Studio and similar) that ship a complete env
+and no `conda` on PATH. Pass `--use-conda` (or `USE_CONDA=1`, or `--env <name>`, which implies it) to get
+the original behavior: `run_pipeline.sh` creating/activating `selective_sft`, `train.sh` and `eval.sh`
+each building their own env and pip-installing. Under `--use-conda`, `run_pipeline.sh`'s `train` stage
+lets `train.sh` manage `ssft_train` itself; without it, the stage passes `--skip-setup` so nothing is
+rebuilt. When the two environments above are NOT separated, the torch/vLLM conflict is yours to avoid.
 
 `requirements-sft-lock.txt` is the fully-pinned transitive lock for the train env. `torchao<0.18` is
 load-bearing: 0.18 breaks `import unsloth`.
