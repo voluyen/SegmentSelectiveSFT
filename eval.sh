@@ -16,6 +16,7 @@
 #
 # Tuy chon:
 #   bash eval.sh --base                    # eval model goc, chua finetune
+#   bash eval.sh --full-finetune           # checkpoint train khong dung LoRA
 #   bash eval.sh --full-sft                # eval checkpoint baseline full-CoT
 #   bash eval.sh --model /duong/dan/checkpoint-250
 #   bash eval.sh --model /duong/dan/checkpoint-250 --tag sel_ep5
@@ -40,14 +41,15 @@ cd "$ROOT_DIR"
 # =============================================================================
 ENV_NAME="${ENV_NAME:-ssft_eval}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
-BASE_MODEL="${BASE_MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B}"
+BASE_MODEL="${BASE_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
 GPU="${GPU:-0}"
 LOG_DIR="${LOG_DIR:-logs}"
 
 # Phai khop voi cach train.sh dat ten thu muc checkpoint.
-EPOCHS="${EPOCHS:-10}"
-LR="${LR:-1e-4}"
-MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-16384}"
+EPOCHS="${EPOCHS:-3}"
+LR="${LR:-5e-5}"
+MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-32768}"
+USE_LORA="${USE_LORA:-1}"   # train.sh mac dinh LoRA -> ten thu muc co hau to _lora
 
 # "task so_mau_moi_cau" - lay tu Eval/run_eval.sh goc cua paper.
 TASKS_DEFAULT="aime24:32 amc23:32 math500:6 minerva:6 gpqa:6 olympiad:6"
@@ -87,6 +89,8 @@ while [[ $# -gt 0 ]]; do
     --base)            WHICH="base"; shift ;;
     --full-sft)        WHICH="fullsft"; shift ;;
     --selective)       WHICH="selective"; shift ;;
+    --lora)            USE_LORA=1; shift ;;
+    --full-finetune)   USE_LORA=0; shift ;;
     --epochs)          EPOCHS="$2"; shift 2 ;;
     --lr)              LR="$2"; shift 2 ;;
     --max-seq-length)  MAX_SEQ_LENGTH="$2"; shift 2 ;;
@@ -141,18 +145,22 @@ latest_checkpoint() {
   return 0
 }
 
+# train.sh ghep hau to theo thu tu: [_fullsft][_lora]
+LORA_SUFFIX=""
+[[ "$USE_LORA" == "1" ]] && LORA_SUFFIX="_lora"
 CKPT_BASE="${ROOT_DIR}/SelectiveSFT/checkpoints/$(basename "$BASE_MODEL")_epoch${EPOCHS}_lr${LR}_len${MAX_SEQ_LENGTH}"
 
 case "$WHICH" in
   base)
     MODEL="$BASE_MODEL"; DEFAULT_TAG="base" ;;
   selective)
-    MODEL="$(latest_checkpoint "$CKPT_BASE")"
-    [[ -n "$MODEL" ]] || die "Khong thay checkpoint trong ${CKPT_BASE} - train truoc, hoac dung --model / --base"
+    MODEL="$(latest_checkpoint "${CKPT_BASE}${LORA_SUFFIX}")"
+    [[ -n "$MODEL" ]] || die "Khong thay checkpoint trong ${CKPT_BASE}${LORA_SUFFIX} - train truoc, hoac dung --model / --base
+      (them --full-finetune neu ban train khong dung LoRA)"
     DEFAULT_TAG="selective" ;;
   fullsft)
-    MODEL="$(latest_checkpoint "${CKPT_BASE}_fullsft")"
-    [[ -n "$MODEL" ]] || die "Khong thay checkpoint trong ${CKPT_BASE}_fullsft - chay 'bash train.sh --full-sft' truoc"
+    MODEL="$(latest_checkpoint "${CKPT_BASE}_fullsft${LORA_SUFFIX}")"
+    [[ -n "$MODEL" ]] || die "Khong thay checkpoint trong ${CKPT_BASE}_fullsft${LORA_SUFFIX} - chay 'bash train.sh --full-sft' truoc"
     DEFAULT_TAG="fullsft" ;;
   custom)
     [[ -n "$MODEL" ]] || die "--model rong"
@@ -169,6 +177,20 @@ esac
 
 # Duong dan phai tuyet doi vi lat nua se cd sang Eval/.
 [[ -d "$MODEL" ]] && MODEL="$(cd "$MODEL" && pwd)"
+
+# vLLM nap model day du, khong hieu adapter LoRA. Neu tro vao thu muc adapter
+# thi dung lai va chi ra lenh merge, thay vi de vLLM bao loi kho hieu.
+if [[ -d "$MODEL" && -f "$MODEL/adapter_config.json" && ! -f "$MODEL/config.json" ]]; then
+  if [[ -d "${MODEL}-merged" ]]; then
+    log "Phat hien adapter LoRA, dung ban da merge: ${MODEL}-merged"
+    MODEL="${MODEL}-merged"
+  else
+    die "${MODEL} la adapter LoRA, vLLM khong nap truc tiep duoc. Merge truoc (trong env train):
+      conda activate ssft_train
+      cd SelectiveSFT && python merge_lora.py --adapter '${MODEL}'
+    roi chay lai lenh nay."
+  fi
+fi
 [[ -n "$OUTPUT_ROOT" ]] || OUTPUT_ROOT="outputs_${RUN_TAG}"
 
 # --quick chi dat mac dinh, khong de len cai ban da go tay.

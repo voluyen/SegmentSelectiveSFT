@@ -21,6 +21,11 @@ class IntegratedGradientsAttribution:
     """
     def __init__(self, model_name):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        if not self.tokenizer.is_fast:
+            raise SystemExit(
+                "Can fast tokenizer (tokenizer.json) de lay offset_mapping - do la cach duy "
+                "nhat xac dinh dung bien segment. Model %r chi co tokenizer cham." % model_name
+            )
         print("pad_token_id", self.tokenizer.pad_token_id)
 
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -201,20 +206,48 @@ if __name__ == "__main__":
                 add_generation_prompt=True,
             )
             
-            pred_thoughts = each_data["segments"]  
+            pred_thoughts = each_data["segments"]
+            # Span token cua tung segment lay tu offset_mapping cua CA chuoi da
+            # ghep, khong do do dai token cua tung prefix cong don: tokenize
+            # rieng "".join(segments[:k]) cho so token khac voi chinh doan do khi
+            # nam trong chuoi day du (BPE merge khac o bien) -> span lech vai
+            # token va IG bi gan nham segment.
+            joined = "".join(pred_thoughts)
+            enc = attribution_calculator.tokenizer(
+                joined, add_special_tokens=False, return_offsets_mapping=True
+            )
+            assistant_tokens = enc["input_ids"]
+            token_offsets = enc["offset_mapping"]
+
+            seg_char_start, cursor = [], 0
+            for seg in pred_thoughts:
+                seg_char_start.append(cursor)
+                cursor += len(seg)
+
+            # Token thuoc segment chua ky tu dau tien cua no.
+            token_seg = []
+            si = 0
+            for (c0, c1) in token_offsets:
+                if c1 <= c0:
+                    token_seg.append(-1)
+                    continue
+                while si + 1 < len(seg_char_start) and c0 >= seg_char_start[si + 1]:
+                    si += 1
+                token_seg.append(si)
+
             assistant_token_spans = []
-            cursor = 0
             for k in range(len(pred_thoughts)):
-                start = cursor
-                segments = "".join(pred_thoughts[:k+1])
-                end = len(attribution_calculator.tokenizer(segments, add_special_tokens=False)["input_ids"])
-                assistant_token_spans.append((start, end))
-                cursor = end
-            assistant_tokens = attribution_calculator.tokenizer("".join(pred_thoughts), add_special_tokens=False)["input_ids"] 
+                idxs = [i for i, sk in enumerate(token_seg) if sk == k]
+                if idxs:
+                    assistant_token_spans.append((idxs[0], idxs[-1] + 1))
+                else:
+                    # Segment khong chiem token nao -> span rong, diem IG = 0.
+                    assistant_token_spans.append((0, 0))
 
             # Shift segment spans by user prompt length
             offset = len(user_tokens)
-            adjusted_spans = [(start + offset, end + offset) for (start, end) in assistant_token_spans]
+            adjusted_spans = [(start + offset, end + offset) if end > start else (0, 0)
+                              for (start, end) in assistant_token_spans]
 
             answer_string = "</think> So, the final answer is \\boxed{" + each_data['answer'] + "}"
             

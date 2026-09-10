@@ -1,53 +1,63 @@
+"""Chia solution thanh segment, ghi them truong `segments` vao jsonl.
+
+Truoc day file nay hard-code tokenizer '../../models/DeepSeek-R1-Distill-Qwen-7B'
+va duong dan LIMO, khong nhan tham so nao - run_pipeline.sh phai sed va mot ban
+runtime tam. Gio nhan tham so truc tiep.
+"""
+import argparse
 import json
-import numpy as np
 import os
-from transformers import AutoTokenizer
-import math
-import re
+import sys
+
+import numpy as np
 from tqdm import tqdm
-import copy
-tokenizer = AutoTokenizer.from_pretrained('../../models/DeepSeek-R1-Distill-Qwen-7B', trust_remote_code=True)
+from transformers import AutoTokenizer
 
-# segment keywords in our implementation
-pattern = r"(\n\nWait|\n\nAlternatively|\n\nBut wait|\n\nBut alternatively|\n\nBut just to|\n\nHowever|\n\nNot sure|\n\nGoing back|\n\nBacktrack|\n\nTrace back|\n\nAnother)" #|\n\n\*\*Final Answer
-# segment keywords in Retro-Search
-# pattern = r"(\n\nWait|\n\nAlternatively|\n\nBut|\n\nHowever|\n\nHmmm|\n\nHmm|\n\nNot sure|\n\nGoing back|\n\nBacktrack|\n\nTrace back|\n\nAnother)" 
-       
-### Code for splitting solutions into segments    
-input_data = []
-with open('../data/limo/test.jsonl', 'r') as f:
-    for line in f:
-        json_obj = json.loads(line.strip())  
-        input_data.append(json_obj)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from segment_utils import DEFAULT_MODE, SEGMENT_PATTERNS, split_segments  # noqa: E402
 
-segment_num = []
-all_len = []
-different_num = 0
-for i, each_data in tqdm(enumerate(input_data)): 
-    # cur_response = each_data['solution'].split("\n</think>")[0]
-    # assert len(each_data['solution'].split("\n</think>")) == 1
 
-    cur_response = each_data['solution']    
-    # if len(each_data['solution'].split("\n\n**Final Answer**")) == 1:
-    #     cur_response = each_data['solution']
-    # else:
-    #     assert len(each_data['solution'].split("\n\n**Final Answer**")) > 1
-    #     cur_response = "\n\n**Final Answer**".join(each_data['solution'].split("\n\n**Final Answer**")[:-1])
-    all_len.append(len(tokenizer(cur_response, add_special_tokens=False)['input_ids']))
-            
-    parts = re.split(pattern, cur_response)
-    segments = [parts[0]]  
-    for j in range(1, len(parts), 2):
-        segments.append(parts[j] + parts[j + 1])  
-    merged_segments = segments
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--input_data_file", default="../data/s1k/train.jsonl", type=str)
+    p.add_argument("--output_data_file", default="../data/s1k/solution_segments.jsonl", type=str)
+    p.add_argument("--tokenizer", default="Qwen/Qwen2.5-7B-Instruct", type=str,
+                   help="Chi dung de bao cao do dai trace, khong anh huong cach chia")
+    p.add_argument("--segment_mode", default=DEFAULT_MODE, choices=sorted(SEGMENT_PATTERNS),
+                   help="paragraph = cat tai moi '\\n\\n'; cue = cat tai tu khoa backtracking (cach cua paper)")
+    return p.parse_args()
 
-    segment_num.append(len(merged_segments))  
 
-    input_data[i]['segments'] = merged_segments
+def main():
+    args = parse_args()
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=True)
 
-print(different_num, len(input_data))
-print(sum(segment_num)/len(segment_num), np.max(all_len))
+    input_data = []
+    with open(args.input_data_file, "r") as f:
+        for line in f:
+            input_data.append(json.loads(line.strip()))
 
-with open('../data/limo/solution_segments.jsonl', 'w') as f:
-    for item in input_data:
-        f.write(json.dumps(item, ensure_ascii=False) + '\n') 
+    segment_num, all_len = [], []
+    for i, each_data in tqdm(enumerate(input_data), total=len(input_data)):
+        cur_response = each_data["solution"]
+        all_len.append(len(tokenizer(cur_response, add_special_tokens=False)["input_ids"]))
+
+        segments = split_segments(cur_response, args.segment_mode)
+        segment_num.append(len(segments))
+        input_data[i]["segments"] = segments
+
+    print("che do chia: %s" % args.segment_mode)
+    print("so mau: %d" % len(input_data))
+    print("segment/mau: trung binh %.1f, min %d, max %d"
+          % (float(np.mean(segment_num)), int(np.min(segment_num)), int(np.max(segment_num))))
+    print("token/trace: trung binh %d, max %d" % (int(np.mean(all_len)), int(np.max(all_len))))
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.output_data_file)), exist_ok=True)
+    with open(args.output_data_file, "w") as f:
+        for item in input_data:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    print("Da ghi: %s" % args.output_data_file)
+
+
+if __name__ == "__main__":
+    main()

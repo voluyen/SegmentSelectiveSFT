@@ -5,14 +5,15 @@
 #
 # Cac stage:
 #   setup     Tao/kiem tra conda env, cai requirements + latex2sympy + unsloth deps
-#   cot       (tuy chon) Tu sinh long-CoT traces cho LIMO bang vLLM
+#   prep      Tai s1K-1.1 tu HuggingFace, doi ve format question/solution/answer
+#   cot       (tuy chon) Tu sinh long-CoT traces bang vLLM
 #   split     Chia solution thanh cac segment  (Attribution/segment_split.py)
 #   ig        Tinh Integrated-Gradients attribution (Attribution/grad_analyze.py)
 #   segments  Gop attribution -> chon important segments (get_important_segments.py)
 #   train     Selective SFT co masking (SelectiveSFT/train_mask.py)
 #
 # Vi du:
-#   bash run_pipeline.sh                        # chay split,ig,segments,train
+#   bash run_pipeline.sh                        # chay prep,split,ig,segments,train
 #   bash run_pipeline.sh --stages setup,split,ig,segments,train
 #   bash run_pipeline.sh --stages train --epochs 5 --lr 1e-5
 #   bash run_pipeline.sh --stages cot           # tu sinh CoT truoc khi split
@@ -27,15 +28,15 @@ cd "$ROOT_DIR"
 # =============================================================================
 # Cau hinh (co the override bang bien moi truong hoac co dong lenh)
 # =============================================================================
-STAGES="${STAGES:-split,ig,segments,train}"
+STAGES="${STAGES:-prep,split,ig,segments,train}"
 
 # --- Moi truong ---
 CONDA_ENV="${CONDA_ENV:-selective_sft}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 
 # --- Model ---
-ATTR_MODEL="${ATTR_MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-7B}"   # model tinh IG
-TRAIN_MODEL="${TRAIN_MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B}" # model SFT
+ATTR_MODEL="${ATTR_MODEL:-Qwen/Qwen2.5-7B-Instruct}"   # model tinh IG
+TRAIN_MODEL="${TRAIN_MODEL:-Qwen/Qwen2.5-7B-Instruct}"  # model SFT
 COT_MODEL="${COT_MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-7B}"     # model sinh CoT
 
 # --- GPU ---
@@ -44,17 +45,19 @@ GPU_TRAIN="${GPU_TRAIN:-0}"
 GPU_COT="${GPU_COT:-0,1,2,3}"
 
 # --- Duong dan du lieu ---
-LIMO_TEST="${LIMO_TEST:-data/limo/test.jsonl}"
-SEGMENT_FILE="${SEGMENT_FILE:-data/limo/solution_segments.jsonl}"
-IG_RAW_FILE="${IG_RAW_FILE:-Attribution/processed_data/limo/solution_segments_attn_integ50_7b.jsonl}"
-IG_FILE="${IG_FILE:-Attribution/processed_data/limo/IG_7B_J50.jsonl}"
-TRAINING_FILE="${TRAINING_FILE:-data/limo/solutions_top70cohe80_lennorm_7B_J50.jsonl}"
+HF_DATASET="${HF_DATASET:-simplescaling/s1K-1.1}"
+RAW_DATA="${RAW_DATA:-data/s1k/train.jsonl}"
+SEGMENT_FILE="${SEGMENT_FILE:-data/s1k/solution_segments.jsonl}"
+IG_RAW_FILE="${IG_RAW_FILE:-Attribution/processed_data/s1k/solution_segments_attn.jsonl}"
+IG_FILE="${IG_FILE:-Attribution/processed_data/s1k/IG.jsonl}"
+TRAINING_FILE="${TRAINING_FILE:-data/s1k/solutions_selected.jsonl}"
+SEGMENT_MODE="${SEGMENT_MODE:-paragraph}"
 
 # --- Sieu tham so ---
 IG_STEPS="${IG_STEPS:-50}"
-EPOCHS="${EPOCHS:-10}"
-LR="${LR:-3e-5}"
-MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-16384}"
+EPOCHS="${EPOCHS:-3}"
+LR="${LR:-5e-5}"
+MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-32768}"
 
 # --- Tracking / logging ---
 # "none" = tat hoan toan (mac dinh). Dat "wandb" + WANDB_PROJECT de bat lai.
@@ -93,6 +96,8 @@ while [[ $# -gt 0 ]]; do
     --max-seq-length)  MAX_SEQ_LENGTH="$2"; shift 2 ;;
     --report-to)       REPORT_TO="$2"; shift 2 ;;
     --training-file)   TRAINING_FILE="$2"; shift 2 ;;
+    --dataset)         HF_DATASET="$2"; shift 2 ;;
+    --segment-mode)    SEGMENT_MODE="$2"; shift 2 ;;
     --force)           FORCE=1; shift ;;
     --offline)         HF_OFFLINE=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
@@ -152,7 +157,7 @@ activate_env() {
 }
 
 stage_setup() {
-  banner "STAGE 0/5 - Environment setup"
+  banner "STAGE 0/6 - Environment setup"
 
   if command -v conda >/dev/null 2>&1; then
     if conda env list | awk '{print $1}' | grep -qx "$CONDA_ENV"; then
@@ -173,8 +178,9 @@ stage_setup() {
   log "Cai latex2sympy (editable)"
   ( cd "${ROOT_DIR}/Eval/latex2sympy" && run pip install -e . )
 
-  log "Cai dependency cho unsloth (SelectiveSFT/requirements.txt)"
-  run pip install -r "${ROOT_DIR}/SelectiveSFT/requirements.txt"
+  warn "Env '${CONDA_ENV}' chi dung cho prep/split/ig/segments (torch 2.7.1 + vLLM).
+      KHONG cai SelectiveSFT/requirements.txt vao day: unsloth can torch 2.9.
+      Stage 'train' tu goi train.sh, script do dung env rieng 'ssft_train'."
 
   log "Setup hoan tat."
 }
@@ -183,7 +189,7 @@ stage_setup() {
 # STAGE: cot (tuy chon) - tu sinh long-CoT traces cho LIMO
 # =============================================================================
 stage_cot() {
-  banner "STAGE 1/5 (tuy chon) - Sinh CoT traces cho LIMO"
+  banner "STAGE 6/6 (tuy chon) - Sinh CoT traces bang vLLM"
 
   export CUDA_VISIBLE_DEVICES="$GPU_COT"
   export TOKENIZERS_PARALLELISM=false
@@ -211,28 +217,38 @@ stage_cot() {
 }
 
 # =============================================================================
-# STAGE: split - chia solution thanh segment
+# STAGE: prep - tai dataset tu HuggingFace ve format cua pipeline
 # =============================================================================
-# segment_split.py hard-code duong dan tokenizer '../../models/DeepSeek-R1-Distill-Qwen-7B'.
-# Ta sinh mot ban sao runtime da vá duong dan do bang ${ATTR_MODEL}, khong sua file goc.
-stage_split() {
-  banner "STAGE 2/5 - Chia solution thanh segments"
+stage_prep() {
+  banner "STAGE 1/6 - Tai ${HF_DATASET}"
 
-  need_file "${ROOT_DIR}/${LIMO_TEST}"
-  mkdir -p "$(dirname "${ROOT_DIR}/${SEGMENT_FILE}")"
-
-  local src="${ROOT_DIR}/Attribution/segment_split.py"
-  local runtime="${ROOT_DIR}/Attribution/_segment_split_runtime.py"
-
-  log "Sinh ban chay tam voi tokenizer = ${ATTR_MODEL}"
-  if [[ "$DRY_RUN" != "1" ]]; then
-    sed -e "s#'../../models/DeepSeek-R1-Distill-Qwen-7B'#'${ATTR_MODEL}'#" "$src" > "$runtime"
-    grep -q "${ATTR_MODEL}" "$runtime" || warn "Khong vá duoc duong dan tokenizer, dung nguyen ban goc."
+  if [[ -s "${ROOT_DIR}/${RAW_DATA}" && "$FORCE" != "1" ]]; then
+    log "${RAW_DATA} da co, bo qua (dung --force de tai lai)."
+    return 0
   fi
 
-  ( cd "${ROOT_DIR}/Attribution" && run python -u _segment_split_runtime.py )
+  run python -u "${ROOT_DIR}/prepare_s1k.py" \
+      --dataset "${HF_DATASET}" \
+      --output_data_file "${ROOT_DIR}/${RAW_DATA}"
 
-  [[ "$DRY_RUN" == "1" ]] || rm -f "$runtime"
+  log "Da tao ${RAW_DATA}"
+}
+
+# =============================================================================
+# STAGE: split - chia solution thanh segment
+# =============================================================================
+stage_split() {
+  banner "STAGE 2/6 - Chia solution thanh segments (mode=${SEGMENT_MODE})"
+
+  need_file "${ROOT_DIR}/${RAW_DATA}"
+  mkdir -p "$(dirname "${ROOT_DIR}/${SEGMENT_FILE}")"
+
+  ( cd "${ROOT_DIR}/Attribution" && run python -u segment_split.py \
+      --input_data_file "${ROOT_DIR}/${RAW_DATA}" \
+      --output_data_file "${ROOT_DIR}/${SEGMENT_FILE}" \
+      --tokenizer "${ATTR_MODEL}" \
+      --segment_mode "${SEGMENT_MODE}" )
+
   [[ "$DRY_RUN" == "1" ]] || need_file "${ROOT_DIR}/${SEGMENT_FILE}"
   log "Da tao ${SEGMENT_FILE}"
 }
@@ -241,7 +257,7 @@ stage_split() {
 # STAGE: ig - tinh Integrated Gradients attribution
 # =============================================================================
 stage_ig() {
-  banner "STAGE 3/5 - Tinh token attribution (Integrated Gradients)"
+  banner "STAGE 3/6 - Tinh token attribution (Integrated Gradients)"
 
   need_file "${ROOT_DIR}/${SEGMENT_FILE}"
   mkdir -p "$(dirname "${ROOT_DIR}/${IG_RAW_FILE}")" "$(dirname "${ROOT_DIR}/${IG_FILE}")"
@@ -274,7 +290,7 @@ stage_ig() {
 # STAGE: segments - gop attribution, chon important segments
 # =============================================================================
 stage_segments() {
-  banner "STAGE 4/5 - Xac dinh important segments"
+  banner "STAGE 4/6 - Xac dinh important segments"
 
   need_file "${ROOT_DIR}/${SEGMENT_FILE}"
   need_file "${ROOT_DIR}/${IG_FILE}"
@@ -297,7 +313,7 @@ stage_segments() {
 # STAGE: train - Selective SFT voi masking
 # =============================================================================
 stage_train() {
-  banner "STAGE 5/5 - Selective SFT"
+  banner "STAGE 5/6 - Selective SFT"
 
   need_file "${ROOT_DIR}/${TRAINING_FILE}"
   mkdir -p "${ROOT_DIR}/SelectiveSFT/checkpoints"
@@ -316,15 +332,17 @@ stage_train() {
     log "Tracking: tat (report_to=${REPORT_TO}). Loss van in ra stdout + ${LOG_DIR}/train.log"
   fi
 
-  ( cd "${ROOT_DIR}/SelectiveSFT" && run python -u train_mask.py \
-      --model_name_or_path "${TRAIN_MODEL}" \
-      --data_names "${ROOT_DIR}/${TRAINING_FILE}" \
+  # Goi train.sh de chi co MOT noi dinh nghia hyperparameter mac dinh.
+  # Khong truyen --skip-setup: train.sh phai tu kich hoat env ssft_train cua no,
+  # khong dung nho env dang active cua pipeline (torch/vllm khac phien ban).
+  ( run bash "${ROOT_DIR}/train.sh" \
+      --model "${TRAIN_MODEL}" \
+      --data "${TRAINING_FILE}" \
+      --gpu "${GPU_TRAIN}" \
       --epochs "${EPOCHS}" \
-      --learning_rate "${LR}" \
-      --max_seq_length "${MAX_SEQ_LENGTH}" \
-      --deepseek \
-      --mask \
-      --apply_all )
+      --lr "${LR}" \
+      --max-seq-length "${MAX_SEQ_LENGTH}" \
+      --segment-mode "${SEGMENT_MODE}" )
 
   log "Checkpoint nam trong SelectiveSFT/checkpoints/"
 }
@@ -335,6 +353,7 @@ stage_train() {
 banner "Segment-Selective SFT pipeline (khong bao gom Eval)"
 cat <<EOF
   Stages       : ${STAGES}
+  Dataset      : ${HF_DATASET}  (segment mode: ${SEGMENT_MODE})
   Attr model   : ${ATTR_MODEL}   (GPU ${GPU_ATTR})
   Train model  : ${TRAIN_MODEL}  (GPU ${GPU_TRAIN})
   IG steps     : ${IG_STEPS}
@@ -351,11 +370,11 @@ if ! has_stage setup; then
   activate_env
 fi
 
-for stage in setup cot split ig segments train; do
+for stage in setup prep cot split ig segments train; do
   if has_stage "$stage"; then
     "stage_${stage}" 2>&1 | tee "${LOG_DIR}/${stage}.log"
   fi
 done
 
 log "Hoan tat sau $(( (SECONDS - START_TS) / 60 )) phut. Log: ${LOG_DIR}/"
-echo "De danh gia model, chay rieng: cd Eval && bash run_eval.sh"
+echo "De danh gia model, chay rieng: bash eval.sh  (LoRA thi merge truoc, xem cuoi train.sh)"

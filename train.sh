@@ -9,16 +9,23 @@
 #   2. Cai SelectiveSFT/requirements.txt      - bo qua neu da cai
 #   3. Train (wandb da tat, log ra logs/train.log)
 #
-# Day la FULL finetuning nen rat ton VRAM. Mac dinh: seq 16384, batch 2,
-# grad_accum 1 - tu chinh bang --batch-size / --grad-accum / --max-seq-length.
+# Mac dinh (LoRA tren Qwen2.5-7B-Instruct, du lieu s1K-1.1):
+#   r=16 alpha=16 dropout=0.05 tren q/k/v/o/gate/up/down_proj
+#   lr 5e-5, 3 epoch, seq 32768, batch 1 x accum 32 = 32 mau/step
+#   AdamW betas (0.9, 0.999) eps 1e-8 wd 0.0, cosine + warmup_ratio 0.1
 #
 # Tuy chon:
 #   bash train.sh --epochs 5 --lr 1e-5
 #   bash train.sh --gpu 1                  # dung GPU khac
-#   bash train.sh --batch-size 1 --grad-accum 2 --max-seq-length 8192
-#   bash train.sh --grad-checkpoint                # bat lai gradient checkpointing neu OOM
-#   bash train.sh --group-by-length                # gom mau cung do dai (khong can khi batch=1)
+#   bash train.sh --batch-size 2 --grad-accum 16   # van la 32 mau/step
+#   bash train.sh --lora-r 32 --lora-alpha 64 --lora-dropout 0
+#   bash train.sh --4bit                   # QLoRA: it VRAM hon, cham hon mot chut
+#   bash train.sh --target-modules "q_proj,v_proj"
+#   bash train.sh --full-finetune          # bo LoRA, finetune toan bo (rat ton VRAM)
+#   bash train.sh --no-grad-checkpoint     # nhanh hon, ton VRAM hon
+#   bash train.sh --segment-mode cue       # chia segment kieu paper thay vi theo "\n\n"
 #   bash train.sh --full-sft               # baseline: SFT tren TOAN BO long CoT (khong mask)
+#   bash train.sh --optim adamw_8bit       # tiet kiem VRAM optimizer state
 #   bash train.sh --reinstall              # cai lai dependency
 #   bash train.sh --skip-setup             # bo qua buoc dung env
 #   bash train.sh --dry-run                # chi in lenh
@@ -34,21 +41,43 @@ cd "$ROOT_DIR"
 # =============================================================================
 ENV_NAME="${ENV_NAME:-ssft_train}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
-MODEL="${MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B}"
-DATA="${DATA:-data/limo/solutions_top70cohe80_lennorm_7B_J50.jsonl}"
+MODEL="${MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+DATA="${DATA:-data/s1k/solutions_selected.jsonl}"
 GPU="${GPU:-0}"
-EPOCHS="${EPOCHS:-10}"
-LR="${LR:-1e-4}"
+EPOCHS="${EPOCHS:-3}"
+LR="${LR:-5e-5}"
 LOG_DIR="${LOG_DIR:-logs}"
 
-MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-16384}"
+# 32768 = dung tran max_position_embeddings cua Qwen2.5-7B-Instruct.
+MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-32768}"
 # Micro-batch 1 = khong co padding nao (khong co mau khac de pad theo).
-# Effective batch van la 1 x 32 = 32, gradient khong doi.
+# Effective batch = 1 x 32 = 32 mau/step.
 BATCH_SIZE="${BATCH_SIZE:-1}"
 GRAD_ACCUM="${GRAD_ACCUM:-32}"
 GROUP_BY_LENGTH="${GROUP_BY_LENGTH:-0}"   # 1 = gom mau cung do dai, bo padding thua
-NO_GRAD_CKPT="${NO_GRAD_CKPT:-1}"         # 1 = tat gradient checkpointing (ton VRAM, nhanh hon)
-                                          #     OOM thi bat lai bang --grad-checkpoint
+# Seq 32768 tren 7B thi gradient checkpointing la bat buoc -> mac dinh BAT.
+NO_GRAD_CKPT="${NO_GRAD_CKPT:-0}"         # 1 = tat (ton VRAM, nhanh hon)
+
+# --- LoRA ---
+USE_LORA="${USE_LORA:-1}"                 # 0 = full finetuning
+LORA_R="${LORA_R:-16}"
+LORA_ALPHA="${LORA_ALPHA:-16}"
+LORA_DROPOUT="${LORA_DROPOUT:-0.05}"
+LOAD_4BIT="${LOAD_4BIT:-0}"               # 1 = QLoRA, weight goc nap o 4-bit (it VRAM hon nhieu)
+TARGET_MODULES="${TARGET_MODULES:-q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj}"
+
+# --- Optimizer / scheduler ---
+OPTIM="${OPTIM:-adamw_torch}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
+ADAM_BETA1="${ADAM_BETA1:-0.9}"
+ADAM_BETA2="${ADAM_BETA2:-0.999}"
+ADAM_EPSILON="${ADAM_EPSILON:-1e-8}"
+LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
+WARMUP_RATIO="${WARMUP_RATIO:-0.1}"
+
+# --- Segmentation / prompt ---
+SEGMENT_MODE="${SEGMENT_MODE:-paragraph}"  # paragraph = chia theo "\n\n"
+THINK_PREFIX="${THINK_PREFIX:-none}"       # Qwen khong co token <think>; xem train_mask.py
 # 0 = selective SFT (chi hoc segment duoc chon) - mac dinh, dung cua paper.
 # 1 = long-CoT SFT thuong: hoc toan bo response. Checkpoint/log rieng,
 #     khong de len ban selective.
@@ -72,13 +101,26 @@ while [[ $# -gt 0 ]]; do
     --grad-accum)      GRAD_ACCUM="$2"; shift 2 ;;
     --group-by-length) GROUP_BY_LENGTH=1; shift ;;
     --no-grad-checkpoint) NO_GRAD_CKPT=1; shift ;;
-    --grad-checkpoint) NO_GRAD_CKPT=0; shift ;;   # bat lai neu OOM
+    --grad-checkpoint) NO_GRAD_CKPT=0; shift ;;
+    --lora)            USE_LORA=1; shift ;;
+    --full-finetune)   USE_LORA=0; shift ;;
+    --lora-r)          LORA_R="$2"; shift 2 ;;
+    --lora-alpha)      LORA_ALPHA="$2"; shift 2 ;;
+    --lora-dropout)    LORA_DROPOUT="$2"; shift 2 ;;
+    --4bit)            LOAD_4BIT=1; shift ;;
+    --target-modules)  TARGET_MODULES="$2"; shift 2 ;;
+    --optim)           OPTIM="$2"; shift 2 ;;
+    --weight-decay)    WEIGHT_DECAY="$2"; shift 2 ;;
+    --warmup-ratio)    WARMUP_RATIO="$2"; shift 2 ;;
+    --lr-scheduler)    LR_SCHEDULER="$2"; shift 2 ;;
+    --segment-mode)    SEGMENT_MODE="$2"; shift 2 ;;
+    --think-prefix)    THINK_PREFIX="$2"; shift 2 ;;
     --full-sft)        FULL_SFT=1; shift ;;
     --selective)       FULL_SFT=0; shift ;;
     --skip-setup)      SKIP_SETUP=1; shift ;;
     --reinstall)       REINSTALL=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
-    -h|--help)         sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)         sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "Tham so khong hop le: $1 (xem --help)" >&2; exit 2 ;;
   esac
 done
@@ -178,27 +220,53 @@ EXTRA_ARGS=()
 [[ "$NO_GRAD_CKPT"    == "1" ]] && EXTRA_ARGS+=(--no_gradient_checkpointing)
 
 # Khong co --mask thi train_mask.py supervise toan bo response = long-CoT SFT
-# thuong. Suffix _fullsft do train_mask.py tu them vao output_dir.
+# thuong. Cac suffix duoi day do train_mask.py tu ghep vao output_dir; eval.sh
+# dung lai dung quy uoc nay de tim checkpoint.
+CKPT_SUFFIX=""
 if [[ "$FULL_SFT" == "1" ]]; then
   MASK_ARGS=()
   MODE_NAME="full-CoT SFT (baseline, khong mask)"
-  CKPT_SUFFIX="_fullsft"
-  LOG_FILE="${LOG_DIR}/train_fullsft.log"
+  CKPT_SUFFIX="${CKPT_SUFFIX}_fullsft"
+  LOG_NAME="train_fullsft"
 else
   MASK_ARGS=(--mask --apply_all)
   MODE_NAME="selective SFT (chi segment duoc chon)"
-  CKPT_SUFFIX=""
-  LOG_FILE="${LOG_DIR}/train.log"
+  LOG_NAME="train"
 fi
 
+if [[ "$USE_LORA" == "1" ]]; then
+  TUNE_ARGS=(
+    --lora_r "${LORA_R}"
+    --lora_alpha "${LORA_ALPHA}"
+    --lora_dropout "${LORA_DROPOUT}"
+    --target_modules "${TARGET_MODULES}"
+  )
+  [[ "$LOAD_4BIT" == "1" ]] && TUNE_ARGS+=(--load_in_4bit)
+  TUNE_NAME="LoRA r=${LORA_R} alpha=${LORA_ALPHA} dropout=${LORA_DROPOUT}$([[ "$LOAD_4BIT" == 1 ]] && echo ' (4-bit/QLoRA)')"
+  CKPT_SUFFIX="${CKPT_SUFFIX}_lora"
+  LOG_NAME="${LOG_NAME}_lora"
+else
+  TUNE_ARGS=(--full_finetune)
+  TUNE_NAME="full finetuning"
+fi
+LOG_FILE="${LOG_DIR}/${LOG_NAME}.log"
+
+# Ten thu muc do bash quyet dinh roi truyen thang bang --output_dir. Truoc day
+# train_mask.py tu ghep ten bang f-string tu float: LR=1e-4 thanh "_lr0.0001",
+# 5e-5 thanh "_lr5e-05", khong bao gio khop chuoi ma bash/eval.sh dung.
 CKPT_DIR="SelectiveSFT/checkpoints/$(basename "$MODEL")_epoch${EPOCHS}_lr${LR}_len${MAX_SEQ_LENGTH}${CKPT_SUFFIX}"
 
 log "Bat dau training"
 echo "    mode       : ${MODE_NAME}"
+echo "    tuning     : ${TUNE_NAME}"
+[[ "$USE_LORA" == "1" ]] && echo "    modules    : ${TARGET_MODULES}"
 echo "    model      : ${MODEL}"
 echo "    epochs / lr: ${EPOCHS} / ${LR}"
 echo "    seq len    : ${MAX_SEQ_LENGTH}"
 echo "    batch      : ${BATCH_SIZE} x ${GRAD_ACCUM} accum (effective $((BATCH_SIZE * GRAD_ACCUM)))"
+echo "    optim      : ${OPTIM} betas=(${ADAM_BETA1}, ${ADAM_BETA2}) eps=${ADAM_EPSILON} wd=${WEIGHT_DECAY}"
+echo "    scheduler  : ${LR_SCHEDULER} warmup_ratio=${WARMUP_RATIO}"
+echo "    segment    : ${SEGMENT_MODE} (think_prefix=${THINK_PREFIX})"
 echo "    group_by_len : $([[ "$GROUP_BY_LENGTH" == 1 ]] && echo on || echo off)"
 echo "    grad_ckpt    : $([[ "$NO_GRAD_CKPT" == 1 ]] && echo off || echo on)"
 echo "    checkpoint : ${CKPT_DIR}"
@@ -211,11 +279,27 @@ echo
     --epochs "${EPOCHS}" \
     --learning_rate "${LR}" \
     --max_seq_length "${MAX_SEQ_LENGTH}" \
+    --output_dir "${ROOT_DIR}/${CKPT_DIR}" \
     --per_device_train_batch_size "${BATCH_SIZE}" \
     --gradient_accumulation_steps "${GRAD_ACCUM}" \
+    --optim "${OPTIM}" \
+    --weight_decay "${WEIGHT_DECAY}" \
+    --adam_beta1 "${ADAM_BETA1}" \
+    --adam_beta2 "${ADAM_BETA2}" \
+    --adam_epsilon "${ADAM_EPSILON}" \
+    --lr_scheduler_type "${LR_SCHEDULER}" \
+    --warmup_ratio "${WARMUP_RATIO}" \
+    --segment_mode "${SEGMENT_MODE}" \
+    --think_prefix "${THINK_PREFIX}" \
+    ${TUNE_ARGS[@]+"${TUNE_ARGS[@]}"} \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-    --deepseek \
     ${MASK_ARGS[@]+"${MASK_ARGS[@]}"} ) 2>&1 | tee "${LOG_FILE}"
 
 log "Xong. Checkpoint: ${CKPT_DIR}"
-echo "De eval: sua MODEL_PATH trong Eval/run_eval.sh tro vao checkpoint tren, roi 'cd Eval && bash run_eval.sh'"
+if [[ "$USE_LORA" == "1" ]]; then
+  echo "Checkpoint la adapter LoRA. Gop vao weight goc truoc khi eval:"
+  echo "    cd SelectiveSFT && python merge_lora.py --adapter <ckpt_dir>/checkpoint-<step>"
+  echo "    bash eval.sh --model <ckpt_dir>/checkpoint-<step>-merged"
+else
+  echo "De eval: bash eval.sh --model ${CKPT_DIR}/checkpoint-<step>"
+fi
