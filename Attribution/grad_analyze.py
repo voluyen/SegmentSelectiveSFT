@@ -1,4 +1,5 @@
 import os
+import gc
 import json
 import torch
 from tqdm import tqdm
@@ -8,6 +9,9 @@ import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+# torch.OutOfMemoryError chi co tu torch 2.5 tro di.
+OOM_ERROR = getattr(torch, "OutOfMemoryError", None) or torch.cuda.OutOfMemoryError
 
 
 class IntegratedGradientsAttribution:
@@ -19,7 +23,7 @@ class IntegratedGradientsAttribution:
       - We attribute the summed log-probability of answer tokens to input token embeddings.
       - The baseline is a sequence filled with `baseline_token_id` (often the pad token).
     """
-    def __init__(self, model_name):
+    def __init__(self, model_name, gradient_checkpointing=True):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         if not self.tokenizer.is_fast:
             raise SystemExit(
@@ -35,6 +39,31 @@ class IntegratedGradientsAttribution:
             trust_remote_code=True
         )
         self.model.eval()
+
+        if gradient_checkpointing:
+            # IG can backward qua toan bo chuoi ma khong dung optimizer, nen
+            # activation cua ca 28 lop bi giu lai - day la phan ton VRAM nhat.
+            # HF chi ap dung checkpointing khi module o training mode, nen phai
+            # goi train(). Voi Qwen2 dropout = 0 nen ket qua khong doi; neu
+            # model co dropout that thi bao loi thay vi lam sai am tham.
+            drop = getattr(self.model.config, "attention_dropout", 0.0) or 0.0
+            extra = [m.p for m in self.model.modules()
+                     if isinstance(m, torch.nn.Dropout) and m.p > 0]
+            if drop > 0 or extra:
+                raise SystemExit(
+                    "Model co dropout > 0 (attention_dropout=%s, Dropout layers=%s). "
+                    "Bat gradient checkpointing phai chuyen sang train() nen dropout se "
+                    "lam nhieu ket qua IG. Chay lai voi --no_gradient_checkpointing."
+                    % (drop, extra)
+                )
+            self.model.config.use_cache = False
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+            self.model.train()
+            print("gradient checkpointing: BAT")
+        else:
+            print("gradient checkpointing: TAT")
 
     @torch.no_grad()
     def _embed(self, input_ids):
@@ -124,12 +153,13 @@ class IntegratedGradientsAttribution:
 
             # forward：batch = chunk_size
             self.model.zero_grad(set_to_none=True)
-            output = self.model(inputs_embeds=interpolated_embeddings)
-            logits = output.logits  # [chunk_size, L, V]
-
-            # Collect logits corresponding to answer positions
-            # target_logits: [chunk_size, A, V]
-            target_logits = logits[:, ans_start-1:ans_end-1, :]
+            # Goi thang base model roi tu ap lm_head len DUNG cac vi tri can.
+            # Neu goi self.model(...) thi lm_head chay tren ca L vi tri, sinh
+            # tensor [B, L, 152064] (~2 GB o L=6800, bf16) cong gradient cua no,
+            # trong khi chi dung vai vi tri cua dap an. Ket qua khong doi.
+            hidden = self.model.model(inputs_embeds=interpolated_embeddings).last_hidden_state
+            target_hidden = hidden[:, ans_start-1:ans_end-1, :]      # [chunk_size, A, H]
+            target_logits = self.model.lm_head(target_hidden)        # [chunk_size, A, V]
             log_probs = torch.nn.functional.log_softmax(target_logits, dim=-1)  # [chunk_size, A, V]
 
             # answer_token_ids: [A] -> [chunk_size, A]
@@ -176,6 +206,11 @@ def parse_args():
     p.add_argument("--output_data_file", type=str, required=True, help="Path to output jsonl (appended)")
     p.add_argument("--output_ig_file", type=str, required=True, help="Path to output IG jsonl")
     p.add_argument("--ig_steps", type=int, default=20, help="Number of IG steps")
+    p.add_argument("--no_gradient_checkpointing", action="store_true",
+                   help="Tat gradient checkpointing: nhanh hon nhung ton VRAM hon nhieu")
+    p.add_argument("--max_input_tokens", type=int, default=0,
+                   help="0 = khong gioi han. >0 = mau dai hon nguong nay se duoc gan diem 0 "
+                        "thay vi tinh IG, de khong OOM giua chung")
     # p.add_argument("--baseline_token", type=str, default="pad", choices=["pad", "zero"], help="Baseline token choice")
     return p.parse_args()
 
@@ -186,7 +221,9 @@ if __name__ == "__main__":
         print(f"GPU {i} Memory: {torch.cuda.get_device_properties(i).total_memory / 1e9:.2f} GB")
 
     args = parse_args()
-    attribution_calculator = IntegratedGradientsAttribution(args.model_name)
+    attribution_calculator = IntegratedGradientsAttribution(
+        args.model_name, gradient_checkpointing=not args.no_gradient_checkpointing
+    )
 
     input_data = []
     with open(args.input_data, "r") as f:
@@ -194,6 +231,8 @@ if __name__ == "__main__":
             json_obj = json.loads(line.strip())  
             input_data.append(json_obj)
 
+    skipped_oom = 0
+    skipped_long = 0
     os.makedirs(os.path.dirname(args.output_data_file), exist_ok=True)
     with open(args.output_data_file, 'a') as f:
         input_template = "{input}\nPlease reason step by step, and put your final answer within \\boxed{{}}."
@@ -278,9 +317,32 @@ if __name__ == "__main__":
             full_tokens = user_tokens + assistant_tokens + answer_tokens
             answer_indices = (ans_start + 1 + len(user_tokens + assistant_tokens), ans_end + len(user_tokens + assistant_tokens))
 
-            print("answer tokens", answer_tokens_split[ans_start: ans_end+1], adjusted_spans)
-            # importance_scores = attribution_calculator.compute_step_to_answer_attribution_integrated(full_tokens, adjusted_spans, answer_indices, baseline_token_id=attribution_calculator.tokenizer.pad_token_id, steps=args.ig_steps)
-            importance_scores = attribution_calculator.batch_compute_step_to_answer_attribution_integrated(full_tokens, adjusted_spans, answer_indices, baseline_token_id=attribution_calculator.tokenizer.pad_token_id, steps=args.ig_steps)   
+            # Diem 0 cho moi segment, giu dung so segment de file IG van thang
+            # hang voi file segment (get_important_segments.py assert dieu nay).
+            zero_scores = [[0.0] * max(0, e - st) for (st, e) in adjusted_spans]
+
+            if args.max_input_tokens and len(full_tokens) > args.max_input_tokens:
+                print("  bo qua mau %d: %d token > --max_input_tokens %d"
+                      % (n, len(full_tokens), args.max_input_tokens))
+                importance_scores = zero_scores
+                skipped_long += 1
+            else:
+                try:
+                    importance_scores = attribution_calculator.batch_compute_step_to_answer_attribution_integrated(
+                        full_tokens, adjusted_spans, answer_indices,
+                        baseline_token_id=attribution_calculator.tokenizer.pad_token_id,
+                        steps=args.ig_steps)
+                except OOM_ERROR:
+                    # Mot mau qua dai khong duoc lam chet ca job nhieu gio. Gan
+                    # diem 0 -> train_mask.py roi ve 3 segment mac dinh cho mau nay.
+                    print("  OOM o mau %d (%d token), gan diem 0 va chay tiep"
+                          % (n, len(full_tokens)))
+                    attribution_calculator.model.zero_grad(set_to_none=True)
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    importance_scores = zero_scores
+                    skipped_oom += 1
+
             input_data[n]["attribution"] = importance_scores
 
             f.write(json.dumps(input_data[n], ensure_ascii=False) + '\n') 
@@ -298,5 +360,11 @@ if __name__ == "__main__":
         all_IG.append(each_data["attribution"])
     with open(args.output_ig_file, "w") as f:
         for each in all_IG:
-            f.write(json.dumps(each, ensure_ascii=False) + '\n') 
+            f.write(json.dumps(each, ensure_ascii=False) + '\n')
+
+    if skipped_oom or skipped_long:
+        print("CANH BAO: %d mau OOM, %d mau vuot --max_input_tokens -> deu duoc gan diem 0. "
+              "Nhung mau nay se chi hoc 3 segment mac dinh (dau/gan cuoi/cuoi)."
+              % (skipped_oom, skipped_long))
+    print("Da ghi: %s" % args.output_ig_file) 
     

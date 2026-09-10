@@ -55,6 +55,8 @@ SEGMENT_MODE="${SEGMENT_MODE:-paragraph}"
 
 # --- Sieu tham so ---
 IG_STEPS="${IG_STEPS:-50}"
+IG_MAX_TOKENS="${IG_MAX_TOKENS:-0}"      # 0 = khong gioi han; >0 = mau dai hon thi gan diem 0
+IG_GRAD_CKPT="${IG_GRAD_CKPT:-1}"        # 1 = bat gradient checkpointing (it VRAM hon nhieu)
 EPOCHS="${EPOCHS:-3}"
 LR="${LR:-5e-5}"
 MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-32768}"
@@ -91,6 +93,8 @@ while [[ $# -gt 0 ]]; do
     --gpu-train)       GPU_TRAIN="$2"; shift 2 ;;
     --gpu-cot)         GPU_COT="$2"; shift 2 ;;
     --ig-steps)        IG_STEPS="$2"; shift 2 ;;
+    --ig-max-tokens)   IG_MAX_TOKENS="$2"; shift 2 ;;
+    --ig-no-grad-checkpoint) IG_GRAD_CKPT=0; shift ;;
     --epochs)          EPOCHS="$2"; shift 2 ;;
     --lr)              LR="$2"; shift 2 ;;
     --max-seq-length)  MAX_SEQ_LENGTH="$2"; shift 2 ;;
@@ -293,12 +297,17 @@ stage_ig() {
 
   export CUDA_VISIBLE_DEVICES="$GPU_ATTR"
 
+  IG_ARGS=()
+  [[ "$IG_MAX_TOKENS" != "0" ]] && IG_ARGS+=(--max_input_tokens "$IG_MAX_TOKENS")
+  [[ "$IG_GRAD_CKPT" == "0" ]]  && IG_ARGS+=(--no_gradient_checkpointing)
+
   ( cd "${ROOT_DIR}/Attribution" && run python -u grad_analyze.py \
       --model_name "${ATTR_MODEL}" \
       --input_data "${ROOT_DIR}/${SEGMENT_FILE}" \
       --output_data_file "${ROOT_DIR}/${IG_RAW_FILE}" \
       --output_ig_file "${ROOT_DIR}/${IG_FILE}" \
-      --ig_steps "${IG_STEPS}" )
+      --ig_steps "${IG_STEPS}" \
+      ${IG_ARGS[@]+"${IG_ARGS[@]}"} )
 
   log "Da tao ${IG_FILE}"
 }
