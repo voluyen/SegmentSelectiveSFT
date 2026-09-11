@@ -80,7 +80,7 @@ COT_MAX_TOKENS="${COT_MAX_TOKENS:-32768}"
 # --- Co khac ---
 DRY_RUN="${DRY_RUN:-0}"
 FORCE="${FORCE:-0}"            # 1 = xoa file trung gian cu roi tinh lai
-HF_OFFLINE="${HF_OFFLINE:-0}"  # 1 = export HF_HUB_OFFLINE=1 khi train
+HF_OFFLINE="${HF_OFFLINE:-0}"  # 1 = cam moi ket noi ra HuggingFace Hub
 LOG_DIR="${LOG_DIR:-logs}"
 
 # =============================================================================
@@ -151,6 +151,13 @@ need_file() {
 # thoai lui ve hanh vi cu tren bash 3.2 thay vi hong.
 TOP_PID=$$
 trap 'if [[ "${BASHPID:-$TOP_PID}" == "$TOP_PID" ]]; then die "Pipeline dung tai dong $LINENO"; fi' ERR
+
+# Truoc day chi dat trong stage_train, trong khi chinh stage ig moi la cho nap
+# model 15 GB. Dat o day de moi stage deu duoc bao ve.
+if [[ "$HF_OFFLINE" == "1" ]]; then
+  export HF_HUB_OFFLINE=1
+  export HF_DATASETS_OFFLINE=1
+fi
 
 mkdir -p "$LOG_DIR"
 
@@ -356,7 +363,6 @@ stage_train() {
   mkdir -p "${ROOT_DIR}/SelectiveSFT/checkpoints"
 
   export CUDA_VISIBLE_DEVICES="$GPU_TRAIN"
-  [[ "$HF_OFFLINE" == "1" ]] && export HF_HUB_OFFLINE=1
 
   export REPORT_TO="$REPORT_TO"
   if [[ "$REPORT_TO" == "wandb" ]]; then

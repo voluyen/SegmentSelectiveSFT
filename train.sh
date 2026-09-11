@@ -90,6 +90,7 @@ FULL_SFT="${FULL_SFT:-0}"
 SKIP_SETUP=0
 REINSTALL=0
 DRY_RUN="${DRY_RUN:-0}"
+HF_OFFLINE="${HF_OFFLINE:-0}"   # 1 = cam moi ket noi ra HuggingFace Hub
 
 # =============================================================================
 while [[ $# -gt 0 ]]; do
@@ -125,6 +126,7 @@ while [[ $# -gt 0 ]]; do
     --selective)       FULL_SFT=0; shift ;;
     --skip-setup)      SKIP_SETUP=1; shift ;;
     --reinstall)       REINSTALL=1; shift ;;
+    --offline)         HF_OFFLINE=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
     -h|--help)         sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "Tham so khong hop le: $1 (xem --help)" >&2; exit 2 ;;
@@ -230,6 +232,12 @@ mkdir -p "$LOG_DIR" "${ROOT_DIR}/SelectiveSFT/checkpoints"
 export CUDA_VISIBLE_DEVICES="$GPU"
 export REPORT_TO=none            # tat wandb
 export WANDB_MODE=disabled     # khong dung WANDB_DISABLED: da deprecated, gay spam canh bao
+if [[ "$HF_OFFLINE" == "1" ]]; then
+  export HF_HUB_OFFLINE=1
+  export HF_DATASETS_OFFLINE=1
+  log "Che do offline: cam ket noi ra HuggingFace Hub"
+fi
+
 export TOKENIZERS_PARALLELISM=false
 
 EXTRA_ARGS=()
