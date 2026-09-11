@@ -18,3 +18,6 @@ __pycache__/
 *.py[cod]
 .venv/
 wandb/
+
+# macOS
+.DS_Store
