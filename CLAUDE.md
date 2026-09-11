@@ -172,23 +172,10 @@ silently misalign every downstream span, and a zero-length segment divides by ze
   identical selections. `run_pipeline.sh` feeds the compact file to the `segments` stage when present.
   `get_important_segments.py` accepts either format, distinguished by JSON type (object vs array) rather
   than by length — a 3-token segment would otherwise be indistinguishable from a compact triple.
-- **`make_bundle.sh` packages results for a download-size-limited machine.** It drops the trace text
-  (reproducible from the source dataset) and keeps only what the pipeline actually produced, then tars
-  and `split`s into `<= --limit` MB parts with a SHA256SUMS file and reassembly instructions. On real
-  data `solutions_selected.jsonl` (~40 MB) becomes `selected_spans.jsonl` (~0.1 MB).
-- **Checkpoint directory names come from bash, not Python.** `train.sh` passes `--output_dir` explicitly
-  because `train_mask.py` used to build the name with an f-string over a float — `--lr 5e-5` became
-  `_lr5e-05` and `1e-4` became `_lr0.0001`, neither matching the string `eval.sh` reconstructs. If you
-  change the naming, change it in `train.sh` and `eval.sh` together.
-- **LoRA checkpoints are adapters; vLLM can't load them.** Run `SelectiveSFT/merge_lora.py` in the
-  **train** env (peft lives only there; CPU is fine), then eval the `-merged` directory. `eval.sh`
-  detects a bare adapter dir, auto-uses a sibling `-merged` if present, and otherwise stops with the
-  exact merge command.
-- **`--think_prefix` exists because Qwen2.5 has no `<think>` token.** The original code added
-  `<think>`/`</think>`/`<|reason_pad|>` and resized embeddings — but under LoRA those rows are frozen, so
-  the new tokens would never train, and the eval-time prompt never emits `<think>` anyway. The default
-  `none` drops the scaffolding so training and eval see the identical prefix. `special` (the old
-  behavior) is rejected under LoRA unless `embed_tokens`/`lm_head` are in `target_modules`.
+- **`make_bundle.sh` splits data files for a download-size-limited machine**, preserving content exactly —
+  `cat <name>.part* > <name>` restores the original byte for byte. `.jsonl` files are split on line
+  boundaries so each part is itself valid JSONL and can be inspected alone; other files split by byte.
+  Writes SHA256SUMS and reassembly instructions; files already under the limit are copied whole.
 - **Eval scripts must run with cwd = `Eval/`**: `parser.py`/`grader.py` do
   `from latex2sympy.latex2sympy2 import ...` (resolved via the local package dir), and `--data_dir`
   defaults to `../data`. All wrappers `cd` there.

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
-# make_bundle.sh - Dong goi ket qua thanh cac phan < 25 MB de tai ve tu server.
+# make_bundle.sh - Cat file du lieu thanh nhieu phan nho de tai ve, giu NGUYEN
+# noi dung (ke ca phan text). Ghep lai bang 'cat' la ra dung file ban dau.
 #
-#   bash make_bundle.sh                              # ket qua attribution + selection
-#   bash make_bundle.sh --adapter SelectiveSFT/checkpoints/<run>/checkpoint-90
-#   bash make_bundle.sh --add logs/train_lora.log --add Eval/outputs_x/summary.json
-#   bash make_bundle.sh --limit 20                   # doi nguong (MB)
+#   bash make_bundle.sh                      # cat cac file du lieu mac dinh
+#   bash make_bundle.sh --limit 20           # doi nguong moi phan (MB)
+#   bash make_bundle.sh --add logs/train_lora.log
+#   bash make_bundle.sh --only data/s1k/solutions_selected.jsonl
+#   bash make_bundle.sh --full-ig            # them ca IG.jsonl per-token (rat lon)
 #
-# Mac dinh KHONG dua vao cac file khong lo va tai tao duoc tu du lieu goc
-# (solution_segments.jsonl, IG.jsonl, solutions_selected.jsonl). Phan khong the
-# tai tao la lua chon segment + diem tong hop, va ca hai deu rat nho.
+# File .jsonl duoc cat theo RANH GIOI DONG nen tung phan van la jsonl hop le,
+# mo ra xem duoc ngay. File khac cat theo byte. Ca hai deu ghep lai bang 'cat'.
 # -----------------------------------------------------------------------------
 
 set -Eeuo pipefail
@@ -17,11 +18,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 DATASET="${DATASET:-s1k}"
-SELECTED="${SELECTED:-data/${DATASET}/solutions_selected.jsonl}"
-IG_COMPACT="${IG_COMPACT:-Attribution/processed_data/${DATASET}/IG_compact.jsonl}"
 OUT_DIR="${OUT_DIR:-bundle}"
 LIMIT_MB="${LIMIT_MB:-24}"
-ADAPTER=""
+FULL_IG=0
+ONLY=()
 EXTRA=()
 
 log()  { printf '\n\033[1;34m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
@@ -30,121 +30,132 @@ die()  { printf '\033[1;31m[ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --adapter)  ADAPTER="$2"; shift 2 ;;
-    --add)      EXTRA+=("$2"); shift 2 ;;
-    --limit)    LIMIT_MB="$2"; shift 2 ;;
-    --dataset)  DATASET="$2"; SELECTED="data/$2/solutions_selected.jsonl"
-                IG_COMPACT="Attribution/processed_data/$2/IG_compact.jsonl"; shift 2 ;;
-    --out)      OUT_DIR="$2"; shift 2 ;;
-    -h|--help)  sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --limit)   LIMIT_MB="$2"; shift 2 ;;
+    --add)     EXTRA+=("$2"); shift 2 ;;
+    --only)    ONLY+=("$2"); shift 2 ;;
+    --dataset) DATASET="$2"; shift 2 ;;
+    --out)     OUT_DIR="$2"; shift 2 ;;
+    --full-ig) FULL_IG=1; shift ;;
+    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) die "Tham so khong hop le: $1 (xem --help)" ;;
   esac
 done
 
-rm -rf "$OUT_DIR"; mkdir -p "${OUT_DIR}/payload"
-
-# --- 1. Lua chon segment, da bo phan text (text tai tao duoc tu dataset goc) ---
-if [[ -f "$SELECTED" ]]; then
-  log "Rut gon $(basename "$SELECTED") - bo text, chi giu lua chon segment"
-  python3 - "$SELECTED" "${OUT_DIR}/payload/selected_spans.jsonl" <<'PY'
-import json, sys
-src, dst = sys.argv[1], sys.argv[2]
-n = 0
-with open(src) as fin, open(dst, "w") as fout:
-    for i, line in enumerate(fin):
-        line = line.strip()
-        if not line:
-            continue
-        r = json.loads(line)
-        fout.write(json.dumps({
-            "idx": i,
-            "n_segments": len(r.get("segments", [])),
-            "selected_spans_ids": r.get("selected_spans_ids", []),
-        }) + "\n")
-        n += 1
-print("  %d mau" % n)
-PY
+# --- Danh sach file can cat ---
+FILES=()
+if [[ ${#ONLY[@]} -gt 0 ]]; then
+  FILES=("${ONLY[@]}")
 else
-  warn "Khong thay ${SELECTED} - bo qua"
+  # Ket qua chon segment: GIU NGUYEN text.
+  FILES+=("data/${DATASET}/solutions_selected.jsonl")
+  # Diem IG tong hop theo segment.
+  FILES+=("Attribution/processed_data/${DATASET}/IG_compact.jsonl")
+  [[ "$FULL_IG" == "1" ]] && FILES+=("Attribution/processed_data/${DATASET}/IG.jsonl")
 fi
+FILES+=(${EXTRA[@]+"${EXTRA[@]}"})
 
-# --- 2. Diem IG tong hop theo segment ---
-if [[ -f "$IG_COMPACT" ]]; then
-  log "Them $(basename "$IG_COMPACT")"
-  cp "$IG_COMPACT" "${OUT_DIR}/payload/"
-else
-  warn "Khong thay ${IG_COMPACT} - bo qua (chay lai stage ig de sinh ra)"
-fi
+rm -rf "$OUT_DIR"; mkdir -p "$OUT_DIR"
 
-# --- 3. Thong ke, de doi chieu ma khong can mo file lon ---
-log "Sinh stats.json"
-python3 - "$SELECTED" "${OUT_DIR}/payload/stats.json" <<'PY'
-import json, os, sys
-src, dst = sys.argv[1], sys.argv[2]
-out = {"source": src}
-if os.path.exists(src):
-    ratios, empty, nseg = [], 0, []
-    for line in open(src):
-        line = line.strip()
-        if not line:
-            continue
-        r = json.loads(line)
-        s, sel = r.get("segments", []), r.get("selected_spans_ids", [])
-        nseg.append(len(s))
-        if s:
-            ratios.append(len(sel) / len(s))
-        if not sel:
-            empty += 1
-    out.update({
-        "n_samples": len(nseg),
-        "segments_per_sample_avg": round(sum(nseg) / len(nseg), 1) if nseg else 0,
-        "selected_ratio_avg": round(sum(ratios) / len(ratios), 4) if ratios else 0,
-        "samples_with_no_selection": empty,
-    })
-json.dump(out, open(dst, "w"), indent=2)
-print("  " + json.dumps(out))
+SPLIT_ANY=0
+for f in "${FILES[@]}"; do
+  if [[ ! -f "$f" ]]; then
+    warn "Khong thay ${f} - bo qua"
+    continue
+  fi
+  log "Cat $(basename "$f")"
+  python3 - "$f" "$OUT_DIR" "$LIMIT_MB" <<'PY'
+import os, sys
+
+src, out_dir, limit_mb = sys.argv[1], sys.argv[2], int(sys.argv[3])
+limit = limit_mb * 1024 * 1024
+base = os.path.basename(src)
+total = os.path.getsize(src)
+
+if total <= limit:
+    # Van copy nguyen file, khong cat - tai ve truc tiep duoc.
+    dst = os.path.join(out_dir, base)
+    with open(src, "rb") as fi, open(dst, "wb") as fo:
+        while True:
+            chunk = fi.read(1 << 20)
+            if not chunk:
+                break
+            fo.write(chunk)
+    print("    %.1f MB - khong can cat" % (total / 1e6))
+    sys.exit(0)
+
+parts, idx = [], 0
+
+def open_part():
+    global idx
+    p = os.path.join(out_dir, "%s.part%02d" % (base, idx))
+    idx += 1
+    parts.append(p)
+    return open(p, "wb")
+
+if src.endswith(".jsonl"):
+    # Cat theo ranh gioi dong: moi phan van la jsonl hop le.
+    fo, size = open_part(), 0
+    with open(src, "rb") as fi:
+        for line in fi:
+            if size and size + len(line) > limit:
+                fo.close()
+                fo, size = open_part(), 0
+            fo.write(line)
+            size += len(line)
+    fo.close()
+else:
+    # File khong phai jsonl: cat theo byte.
+    with open(src, "rb") as fi:
+        while True:
+            fo, size = open_part(), 0
+            while size < limit:
+                chunk = fi.read(min(1 << 20, limit - size))
+                if not chunk:
+                    break
+                fo.write(chunk)
+                size += len(chunk)
+            fo.close()
+            if size == 0:
+                os.remove(parts.pop())
+                break
+            if size < limit:
+                break
+
+print("    %.1f MB -> %d phan" % (total / 1e6, len(parts)))
+for p in parts:
+    print("      %-44s %5.1f MB" % (os.path.basename(p), os.path.getsize(p) / 1e6))
 PY
-
-# --- 4. Adapter LoRA (neu co) ---
-if [[ -n "$ADAPTER" ]]; then
-  [[ -d "$ADAPTER" ]] || die "Khong thay thu muc adapter: ${ADAPTER}"
-  log "Them adapter: ${ADAPTER}"
-  mkdir -p "${OUT_DIR}/payload/adapter"
-  # Chi lay file cua adapter, khong lay optimizer/scheduler state.
-  for f in adapter_model.safetensors adapter_config.json README.md \
-           tokenizer_config.json tokenizer.json special_tokens_map.json; do
-    [[ -f "${ADAPTER}/${f}" ]] && cp "${ADAPTER}/${f}" "${OUT_DIR}/payload/adapter/"
-  done
-  du -sh "${OUT_DIR}/payload/adapter" | sed 's/^/    /'
-fi
-
-for f in ${EXTRA[@]+"${EXTRA[@]}"}; do
-  [[ -f "$f" ]] && { log "Them ${f}"; cp "$f" "${OUT_DIR}/payload/"; } || warn "Khong thay ${f}"
+  SPLIT_ANY=1
 done
 
-# --- 5. Nen va cat nho ---
-log "Nen va cat thanh phan <= ${LIMIT_MB} MB"
-tar -czf "${OUT_DIR}/bundle.tar.gz" -C "${OUT_DIR}" payload
-TOTAL=$(du -m "${OUT_DIR}/bundle.tar.gz" | cut -f1)
-split -b "${LIMIT_MB}m" "${OUT_DIR}/bundle.tar.gz" "${OUT_DIR}/bundle.tar.gz.part"
-rm -f "${OUT_DIR}/bundle.tar.gz"
-rm -rf "${OUT_DIR}/payload"
+[[ "$SPLIT_ANY" == "1" ]] || die "Khong co file nao de cat."
 
-( cd "$OUT_DIR" && (shasum -a 256 bundle.tar.gz.part* > SHA256SUMS 2>/dev/null \
-                    || sha256sum bundle.tar.gz.part* > SHA256SUMS) )
+log "Checksum"
+( cd "$OUT_DIR" && (shasum -a 256 ./* > SHA256SUMS 2>/dev/null || sha256sum ./* > SHA256SUMS) ) || true
 
-cat > "${OUT_DIR}/GHEP_LAI.txt" <<TXT
-Tai het cac file bundle.tar.gz.part* roi ghep lai o may cua ban:
-
-    cat bundle.tar.gz.part* > bundle.tar.gz
-    tar -xzf bundle.tar.gz
-
-Kiem tra toan ven truoc khi ghep:
-    shasum -a 256 -c SHA256SUMS      # hoac: sha256sum -c SHA256SUMS
-TXT
+# --- Huong dan ghep lai ---
+{
+  echo "Tai het cac file trong thu muc nay ve, roi ghep lai:"
+  echo
+  for f in "${FILES[@]}"; do
+    b="$(basename "$f")"
+    if ls "${OUT_DIR}/${b}.part"* >/dev/null 2>&1; then
+      echo "    cat ${b}.part* > ${b}"
+    elif [[ -f "${OUT_DIR}/${b}" ]]; then
+      echo "    # ${b} khong bi cat, dung luon"
+    fi
+  done
+  echo
+  echo "Kiem tra toan ven (chay TRUOC khi ghep):"
+  echo "    shasum -a 256 -c SHA256SUMS      # hoac: sha256sum -c SHA256SUMS"
+  echo
+  echo "Kiem tra file jsonl sau khi ghep:"
+  echo "    wc -l <ten_file>.jsonl"
+  echo "    python3 -c \"import json;[json.loads(l) for l in open('<ten_file>.jsonl')];print('jsonl hop le')\""
+} > "${OUT_DIR}/GHEP_LAI.txt"
 
 echo
-log "Xong - ${OUT_DIR}/ (tong ${TOTAL} MB)"
-ls -lh "$OUT_DIR" | tail -n +2 | awk '{printf "    %-28s %s\n", $NF, $5}'
+log "Xong - ${OUT_DIR}/"
+ls -lh "$OUT_DIR" | tail -n +2 | awk '{printf "    %-46s %s\n", $NF, $5}'
 echo
-echo "  Tai ve tat ca file tren, roi lam theo ${OUT_DIR}/GHEP_LAI.txt"
+cat "${OUT_DIR}/GHEP_LAI.txt" | sed 's/^/  /'
