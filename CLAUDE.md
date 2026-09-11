@@ -43,8 +43,9 @@ each building their own env and pip-installing. Under `--use-conda`, `run_pipeli
 lets `train.sh` manage `ssft_train` itself; without it, the stage passes `--skip-setup` so nothing is
 rebuilt. When the two environments above are NOT separated, the torch/vLLM conflict is yours to avoid.
 
-`requirements-sft-lock.txt` is the fully-pinned transitive lock for the train env. `torchao<0.18` is
-load-bearing: 0.18 breaks `import unsloth`.
+`requirements-sft-lock.txt` (the fully-pinned transitive lock for the train env) was **removed from the
+repo**; `setup.sh train --lock` still points at it and will fail unless you regenerate one with
+`pip freeze`. `torchao<0.18` is load-bearing: 0.18 breaks `import unsloth`.
 
 `train.sh` / `eval.sh` build their env on first run and drop a stamp file (`.setup_done_<env>_v<N>`) to
 skip reinstalling. Bump the `_vN` suffix in the script when the requirements change, or the stamp will
@@ -192,8 +193,15 @@ silently misalign every downstream span, and a zero-length segment divides by ze
   now driven by `--stop_at_epoch` and disabled by default.
 - Every generated artifact is gitignored (`logs/`, `SelectiveSFT/checkpoints/`,
   `Attribution/processed_data/`, `Eval/outputs*`). `data/s1k/*` is produced by `prepare_s1k.py` and the
-  attribution stages; the committed `data/limo/solutions_top70cohe80_lennorm_7B_J50.jsonl` is the
-  paper's original LIMO training file.
+  attribution stages.
+- **`data/` ships no datasets anymore.** The eval test sets (`data/<task>/test.jsonl` for aime24, amc23,
+  gpqa, math500, minerva, olympiad) and the paper's LIMO files (`data/limo/*.jsonl`) were removed from
+  the repo; `Eval/data_loader.py` has no HF fallback for those tasks, so `eval.sh` fails on a missing
+  `test.jsonl`. Restore them from `upstream/main` (`git checkout upstream/main -- data/<task>`) or
+  point `--data_dir` at a copy.
+- **`downloads.txt` lists what an offline server must fetch beforehand** (one `--hf-dataset` /
+  `--hf <repo> <dest>` line each, `@PROJECT@` substituted by the download tool): the s1K CoT dataset
+  (`baesad/s1K-1.1-deepseek-cot`) and `Qwen/Qwen2.5-7B-Instruct`. Pair with `run_pipeline.sh --offline`.
 
 ## Defaults worth knowing
 
