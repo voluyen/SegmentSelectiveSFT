@@ -273,17 +273,8 @@ stage_ig() {
   need_file "${ROOT_DIR}/${SEGMENT_FILE}"
   mkdir -p "$(dirname "${ROOT_DIR}/${IG_RAW_FILE}")" "$(dirname "${ROOT_DIR}/${IG_FILE}")"
 
-  # grad_analyze.py mo output_data_file o che do append -> phai don file cu,
-  # neu khong ket qua se bi nhan doi.
-  if [[ -s "${ROOT_DIR}/${IG_RAW_FILE}" ]]; then
-    if [[ "$FORCE" == "1" ]]; then
-      log "Xoa file attribution cu: ${IG_RAW_FILE}"
-      run rm -f "${ROOT_DIR}/${IG_RAW_FILE}"
-    else
-      die "${IG_RAW_FILE} da ton tai va script ghi o che do append.
-      Chay lai voi --force de xoa va tinh lai, hoac doi IG_RAW_FILE."
-    fi
-  fi
+  # grad_analyze.py gio ghi de nen chay lai la an toan, khong can --force nua.
+  [[ -s "${ROOT_DIR}/${IG_RAW_FILE}" ]] && log "Ghi de file attribution cu: ${IG_RAW_FILE}"
 
   export CUDA_VISIBLE_DEVICES="$GPU_ATTR"
 

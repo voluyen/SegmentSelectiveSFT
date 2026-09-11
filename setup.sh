@@ -118,6 +118,26 @@ do_check() {
     fi
   done
 
+  # 'import transformers' khong keo theo quantizers, nen khong lo ra duoc loi
+  # kieu torchao/torch lech phien ban. Chuoi duoi day moi la chuoi that su chay
+  # khi grad_analyze.py goi AutoModelForCausalLM.from_pretrained.
+  log "Thu chuoi import that (bat loi torchao / numpy-sklearn lech ABI)"
+  if python -c "
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import transformers.modeling_utils      # keo theo quantizers -> torchao
+import transformers.models.qwen2.modeling_qwen2
+" >/dev/null 2>&1; then
+    ok "transformers nap duoc model class"
+  else
+    miss "transformers KHONG nap duoc model class - loi that:"
+    python -c "
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import transformers.modeling_utils
+import transformers.models.qwen2.modeling_qwen2
+" 2>&1 | tail -3 | sed 's/^/        /'
+    missing=$((missing + 1))
+  fi
+
   log "Phien ban"
   python - <<'PY' 2>/dev/null || true
 mods = ["torch", "transformers", "numpy", "datasets", "trl", "unsloth", "vllm", "peft", "torchao"]

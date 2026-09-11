@@ -234,7 +234,9 @@ if __name__ == "__main__":
     skipped_oom = 0
     skipped_long = 0
     os.makedirs(os.path.dirname(args.output_data_file), exist_ok=True)
-    with open(args.output_data_file, 'a') as f:
+    # Ghi de ('w'), khong noi them ('a'). Che do append cu khien chay lai lan
+    # thu hai nhan doi ban ghi va lam vo assert o get_important_segments.py.
+    with open(args.output_data_file, 'w') as f:
         input_template = "{input}\nPlease reason step by step, and put your final answer within \\boxed{{}}."
         for n in tqdm(range(len(input_data))): 
             each_data = input_data[n]
