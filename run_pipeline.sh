@@ -60,6 +60,9 @@ RAW_DATA="${RAW_DATA:-data/s1k/train.jsonl}"
 SEGMENT_FILE="${SEGMENT_FILE:-data/s1k/solution_segments.jsonl}"
 IG_RAW_FILE="${IG_RAW_FILE:-Attribution/processed_data/s1k/solution_segments_attn.jsonl}"
 IG_FILE="${IG_FILE:-Attribution/processed_data/s1k/IG.jsonl}"
+# Ban tong hop theo segment: nho hon ~25 lan ma cho ket qua y het (xem
+# get_important_segments.py). Dung lam dau vao mac dinh cho stage segments.
+IG_COMPACT_FILE="${IG_COMPACT_FILE:-Attribution/processed_data/s1k/IG_compact.jsonl}"
 TRAINING_FILE="${TRAINING_FILE:-data/s1k/solutions_selected.jsonl}"
 SEGMENT_MODE="${SEGMENT_MODE:-paragraph}"
 
@@ -287,6 +290,7 @@ stage_ig() {
       --input_data "${ROOT_DIR}/${SEGMENT_FILE}" \
       --output_data_file "${ROOT_DIR}/${IG_RAW_FILE}" \
       --output_ig_file "${ROOT_DIR}/${IG_FILE}" \
+      --output_compact_file "${ROOT_DIR}/${IG_COMPACT_FILE}" \
       --ig_steps "${IG_STEPS}" \
       ${IG_ARGS[@]+"${IG_ARGS[@]}"} )
 
@@ -300,7 +304,6 @@ stage_segments() {
   banner "STAGE segments - Xac dinh important segments"
 
   need_file "${ROOT_DIR}/${SEGMENT_FILE}"
-  need_file "${ROOT_DIR}/${IG_FILE}"
   mkdir -p "$(dirname "${ROOT_DIR}/${TRAINING_FILE}")"
 
   if [[ -s "${ROOT_DIR}/${TRAINING_FILE}" && "$FORCE" == "1" ]]; then
@@ -308,9 +311,16 @@ stage_segments() {
     run rm -f "${ROOT_DIR}/${TRAINING_FILE}"
   fi
 
+  # Uu tien ban compact: cung ket qua, nhung nap nhanh hon nhieu.
+  IG_INPUT="${ROOT_DIR}/${IG_COMPACT_FILE}"
+  if [[ ! -s "$IG_INPUT" ]]; then
+    IG_INPUT="${ROOT_DIR}/${IG_FILE}"
+    log "Chua co ban compact, dung ${IG_FILE}"
+  fi
+
   ( cd "${ROOT_DIR}/Attribution" && run python -u get_important_segments.py \
       --input_data_file "${ROOT_DIR}/${SEGMENT_FILE}" \
-      --IG_score_data_file "${ROOT_DIR}/${IG_FILE}" \
+      --IG_score_data_file "$IG_INPUT" \
       --output_data_file "${ROOT_DIR}/${TRAINING_FILE}" )
 
   log "Da tao training file: ${TRAINING_FILE}"

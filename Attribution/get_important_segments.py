@@ -25,11 +25,32 @@ with open(args.input_data_file, "r") as f:
         json_obj = json.loads(line.strip())  
         input_data.append(json_obj)
 
+def to_compact(row):
+    """Doi ve dang [n_token, sum|IG|, sum IG] cho tung segment.
+
+    Nhan ca hai dinh dang:
+      - {"segments": [[n, sum_abs, sum_signed], ...]}   ban compact
+      - [[diem tung token], ...]                        ban day du
+    Phan biet bang kieu du lieu (dict hay list) chu khong doan theo do dai:
+    mot segment dung 3 token se trong y het mot bo ba compact.
+    """
+    if isinstance(row, dict):
+        return [tuple(x) for x in row["segments"]]
+    out = []
+    for seg in row:
+        n_tok = len(seg)
+        out.append((n_tok,
+                    float(np.sum(np.abs(seg))) if n_tok else 0.0,
+                    float(np.sum(seg)) if n_tok else 0.0))
+    return out
+
+
 all_IG_list = []
 with open(args.IG_score_data_file, "r") as f: 
     for line in f:
-        json_obj = json.loads(line.strip())  
-        all_IG_list.append(json_obj)
+        line = line.strip()
+        if line:
+            all_IG_list.append(to_compact(json.loads(line)))
 print("sample number", len(input_data), len(all_IG_list))
 
 
@@ -39,14 +60,10 @@ for i in range(len(input_data)):
     cur_IGs = all_IG_list[i]
         
     all_segs_IG_stres = []
-    for each_seg in cur_IGs:
-        abs_each_seg = [abs(_) for _ in each_seg]
+    for n_tok, sum_abs, _sum_signed in cur_IGs:
         # Chia theo "\n\n" tao ra nhieu segment rat ngan; segment 0 token se
         # lam phep chia cho len**0.5 ra nan va keo hong ca thu tu sap xep.
-        if len(abs_each_seg) == 0:
-            all_segs_IG_stres.append(0.0)
-        else:
-            all_segs_IG_stres.append(np.sum(abs_each_seg)/(len(abs_each_seg)**0.5))
+        all_segs_IG_stres.append(sum_abs / (n_tok ** 0.5) if n_tok else 0.0)
     indexed_sorted = sorted(enumerate(all_segs_IG_stres), key=lambda x: -x[1])
     sorted_indices = [idx for idx, val in indexed_sorted]
     sorted_inst_IG_stre = np.array([val for idx, val in indexed_sorted])
@@ -66,12 +83,11 @@ for i in range(len(input_data)):
     important_index = sorted(sorted_indices[:j+1])
         
     IG_dire_list = []
-    for _ in range(len(input_data[i]["segments"])):
-        denom = np.sum(np.abs(cur_IGs[_]))
-        # denom == 0 khi segment rong hoac toan bo IG bang 0 -> coi nhu khong
+    for _n_tok, sum_abs, sum_signed in cur_IGs:
+        # sum_abs == 0 khi segment rong hoac toan bo IG bang 0 -> coi nhu khong
         # coherent (1.0) de bo qua, thay vi 0/0 = nan (nan <= 0.8 la False,
         # dung ngau nhien nhung khong hien y do).
-        IG_dire_list.append(abs(np.sum(cur_IGs[_])) / denom if denom > 0 else 1.0)
+        IG_dire_list.append(abs(sum_signed) / sum_abs if sum_abs > 0 else 1.0)
 
     select_span_ids = [_ for _ in important_index if IG_dire_list[_] <= args.coherence_max]
     assert select_span_ids == sorted(select_span_ids)

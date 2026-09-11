@@ -208,6 +208,12 @@ def parse_args():
     p.add_argument("--ig_steps", type=int, default=20, help="Number of IG steps")
     p.add_argument("--no_gradient_checkpointing", action="store_true",
                    help="Tat gradient checkpointing: nhanh hon nhung ton VRAM hon nhieu")
+    p.add_argument("--output_compact_file", type=str, default="",
+                   help="File tong hop theo SEGMENT (3 so/segment) thay vi tung token. "
+                        "De trong = tu dat ten <output_ig_file> doi duoi thanh _compact.jsonl. "
+                        "Nho hon ~30 lan ma get_important_segments.py van dung duoc.")
+    p.add_argument("--overwrite", action="store_true",
+                   help="Tinh lai tu dau. Mac dinh: neu da co ket qua do dang thi chay tiep tu do.")
     p.add_argument("--max_input_tokens", type=int, default=0,
                    help="0 = khong gioi han. >0 = mau dai hon nguong nay se duoc gan diem 0 "
                         "thay vi tinh IG, de khong OOM giua chung")
@@ -234,11 +240,45 @@ if __name__ == "__main__":
     skipped_oom = 0
     skipped_long = 0
     os.makedirs(os.path.dirname(args.output_data_file), exist_ok=True)
-    # Ghi de ('w'), khong noi them ('a'). Che do append cu khien chay lai lan
-    # thu hai nhan doi ban ghi va lam vo assert o get_important_segments.py.
-    with open(args.output_data_file, 'w') as f:
+
+    # --- Chay tiep tu ket qua do dang ---
+    # Stage nay chay nhieu gio nen dut giua chung la chuyen binh thuong. Doc lai
+    # phan da xong, doi chieu 'question' de chac chan khop dung mau, roi chay
+    # tiep. Khong khop (doi dataset, doi cach chia segment) thi dung han thay vi
+    # tron hai lan chay vao nhau.
+    done = 0
+    write_mode = 'w'
+    if not args.overwrite and os.path.exists(args.output_data_file):
+        existing = []
+        with open(args.output_data_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    existing.append(json.loads(line))
+                except json.JSONDecodeError:
+                    # Dong cuoi co the bi cat giua chung neu bi kill dot ngot.
+                    print("Bo dong cuoi bi hong trong %s" % args.output_data_file)
+                    break
+        for i, rec in enumerate(existing):
+            if i >= len(input_data) or rec.get("question") != input_data[i].get("question"):
+                raise SystemExit(
+                    "Ket qua cu trong %s khong khop du lieu dau vao tai mau %d.\n"
+                    "Co ve la cua lan chay voi dataset/cach chia segment khac. "
+                    "Chay lai voi --overwrite de tinh lai tu dau." % (args.output_data_file, i)
+                )
+        done = len(existing)
+        if done >= len(input_data):
+            print("Da co du %d/%d mau, khong con gi de tinh." % (done, len(input_data)))
+        elif done > 0:
+            print("Chay tiep tu mau %d/%d (%d mau da xong)." % (done, len(input_data), done))
+        write_mode = 'a'
+        del existing
+
+    with open(args.output_data_file, write_mode) as f:
         input_template = "{input}\nPlease reason step by step, and put your final answer within \\boxed{{}}."
-        for n in tqdm(range(len(input_data))): 
+        for n in tqdm(range(done, len(input_data)), initial=done, total=len(input_data)): 
             each_data = input_data[n]
             user_msg = input_template.format(input=each_data["question"])
             user_tokens = attribution_calculator.tokenizer.apply_chat_template(
@@ -360,23 +400,46 @@ if __name__ == "__main__":
             f.write(json.dumps(input_data[n], ensure_ascii=False) + '\n') 
 
    
-    attribution_output_data = []     
-    with open(args.output_data_file, 'r') as f: 
-        for line in f:
-            json_obj = json.loads(line.strip())  
-            attribution_output_data.append(json_obj)
-    print(len(attribution_output_data)) 
+    # get_important_segments.py chi can 3 so moi segment chu khong can diem tung
+    # token: Strength = sum|IG| / sqrt(N), Consistency = |sum IG| / sum|IG|.
+    # Nen ngoai file IG day du, ghi them ban compact nho hon ~30 lan - du de
+    # chay tiep pipeline va du nho de tai ve.
+    compact_path = args.output_compact_file
+    if not compact_path:
+        base = args.output_ig_file
+        compact_path = (base[:-6] if base.endswith(".jsonl") else base) + "_compact.jsonl"
 
-    all_IG = []
-    for n, each_data in enumerate(attribution_output_data):
-        all_IG.append(each_data["attribution"])
-    with open(args.output_ig_file, "w") as f:
-        for each in all_IG:
-            f.write(json.dumps(each, ensure_ascii=False) + '\n')
+    # Doc theo tung dong thay vi nap ca file vao bo nho: file nay co the vai
+    # tram MB.
+    n_rows = 0
+    with open(args.output_data_file, 'r') as fin, \
+         open(args.output_ig_file, "w") as f_full, \
+         open(compact_path, "w") as f_small:
+        for line in fin:
+            line = line.strip()
+            if not line:
+                continue
+            attribution = json.loads(line)["attribution"]
+            f_full.write(json.dumps(attribution, ensure_ascii=False) + '\n')
+
+            compact = []
+            for seg in attribution:
+                n_tok = len(seg)
+                sum_abs = float(np.sum(np.abs(seg))) if n_tok else 0.0
+                sum_signed = float(np.sum(seg)) if n_tok else 0.0
+                compact.append([n_tok, round(sum_abs, 8), round(sum_signed, 8)])
+            f_small.write(json.dumps({"segments": compact}) + '\n')
+            n_rows += 1
+
+    print("Da ghi %d mau" % n_rows)
+    print("  IG day du : %s (%.1f MB)"
+          % (args.output_ig_file, os.path.getsize(args.output_ig_file) / 1e6))
+    print("  IG compact: %s (%.1f MB)  <- dung file nay cho get_important_segments"
+          % (compact_path, os.path.getsize(compact_path) / 1e6))
 
     if skipped_oom or skipped_long:
         print("CANH BAO: %d mau OOM, %d mau vuot --max_input_tokens -> deu duoc gan diem 0. "
               "Nhung mau nay se chi hoc 3 segment mac dinh (dau/gan cuoi/cuoi)."
               % (skipped_oom, skipped_long))
-    print("Da ghi: %s" % args.output_ig_file) 
+ 
     

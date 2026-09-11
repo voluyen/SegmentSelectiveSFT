@@ -128,7 +128,7 @@ data/s1k/solution_segments.jsonl     (+ segments[])
   │  Attribution/grad_analyze.py — Integrated Gradients from each segment's tokens
   │                                to the \boxed{answer} tokens (ig_steps=50)
   ▼
-Attribution/processed_data/s1k/IG.jsonl
+Attribution/processed_data/s1k/IG.jsonl  +  IG_compact.jsonl
   │  Attribution/get_important_segments.py — per-segment score = sum|IG| / sqrt(len);
   │    keep top segments up to --cumulative_ratio (0.7) of the mass, drop those with
   │    |sum IG| / sum|IG| > --coherence_max (0.8)
@@ -161,9 +161,21 @@ silently misalign every downstream span, and a zero-length segment divides by ze
 - **A sample whose labels are all `-100` yields `nan` loss and poisons the run.** This happens when
   `max_seq_length` truncates away the response. `train_mask.py` drops such samples in `.map()` and
   reports the count; it does not crash.
-- **`grad_analyze.py` opens `--output_data_file` in append mode.** Re-running without deleting it
-  duplicates every record and breaks the length assert downstream. `run_pipeline.sh` refuses to proceed
-  unless `--force`.
+- **The `ig` stage resumes by default.** It re-reads its output, checks each record's `question` against
+  the input, and continues from the first unprocessed sample; a truncated last line (from a `kill -9`) is
+  dropped. A mismatch stops the run rather than interleaving two different runs — pass `--overwrite` to
+  recompute from scratch. The output file is opened `'w'` on a fresh run and `'a'` when resuming, so a
+  re-run never silently duplicates records.
+- **Per-token IG is never needed downstream.** `get_important_segments.py` only uses
+  `Σ|IG|`, `ΣIG` and the token count per segment (Eq 3), so `grad_analyze.py` also writes
+  `IG_compact.jsonl` holding exactly those three numbers — ~25x smaller than `IG.jsonl`, with verified
+  identical selections. `run_pipeline.sh` feeds the compact file to the `segments` stage when present.
+  `get_important_segments.py` accepts either format, distinguished by JSON type (object vs array) rather
+  than by length — a 3-token segment would otherwise be indistinguishable from a compact triple.
+- **`make_bundle.sh` packages results for a download-size-limited machine.** It drops the trace text
+  (reproducible from the source dataset) and keeps only what the pipeline actually produced, then tars
+  and `split`s into `<= --limit` MB parts with a SHA256SUMS file and reassembly instructions. On real
+  data `solutions_selected.jsonl` (~40 MB) becomes `selected_spans.jsonl` (~0.1 MB).
 - **Checkpoint directory names come from bash, not Python.** `train.sh` passes `--output_dir` explicitly
   because `train_mask.py` used to build the name with an f-string over a float — `--lr 5e-5` became
   `_lr5e-05` and `1e-4` became `_lr0.0001`, neither matching the string `eval.sh` reconstructs. If you
