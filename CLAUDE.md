@@ -29,7 +29,13 @@ This is the single most important constraint. Never install both requirement set
 
 `peft` lives only in the train env, so **LoRA merging must run there**, not in the eval env.
 
-**All three wrappers default to `USE_CONDA=0` — they use whatever Python is already active and build
+Environment setup lives in **`setup.sh`**, not in the pipeline — `run_pipeline.sh` only runs stages.
+`bash setup.sh check --for train|eval|all` verifies an environment without installing anything (useful
+on air-gapped machines); `bash setup.sh eval` / `bash setup.sh train` install the respective set, with
+`--conda <name>` / `--venv <dir>` to build an isolated one. It refuses quietly-broken combinations by
+warning when it sees the other side's marker package (`unsloth` vs `vllm`) already installed.
+
+**All three pipeline wrappers default to `USE_CONDA=0` — they use whatever Python is already active and build
 nothing.** That suits managed cloud environments (Lightning Studio and similar) that ship a complete env
 and no `conda` on PATH. Pass `--use-conda` (or `USE_CONDA=1`, or `--env <name>`, which implies it) to get
 the original behavior: `run_pipeline.sh` creating/activating `selective_sft`, `train.sh` and `eval.sh`
@@ -47,12 +53,19 @@ mask the new deps. `--reinstall` forces, `--skip-setup` skips.
 ## Commands
 
 ```bash
-# One-time: fetch s1K-1.1 and reshape it to {question, solution, answer}
-python prepare_s1k.py                       # -> data/s1k/train.jsonl
+# Environment (separate from the pipeline)
+bash setup.sh check --for train             # verify without installing
+bash setup.sh eval                          # requirements.txt + latex2sympy
+bash setup.sh train --conda ssft_train      # requirements-sft.txt in its own env
 
-# Attribution stages (eval/vLLM env) — produces data/s1k/solutions_selected.jsonl
-bash run_pipeline.sh --stages prep,split,ig,segments
+# Data prep, once
+python prepare_s1k.py                       # -> data/s1k/train.jsonl
+bash run_pipeline.sh --stages prep,split    # -> data/s1k/solution_segments.jsonl
+
+# Default pipeline: attribution + selective SFT (assumes solution_segments.jsonl exists)
+bash run_pipeline.sh                        # = --stages ig,segments,train
 bash run_pipeline.sh --stages ig --force     # ig stage appends; --force clears the old file first
+bash run_pipeline.sh --offline               # air-gapped: sets HF_HUB_OFFLINE + HF_DATASETS_OFFLINE
 bash run_pipeline.sh --segment-mode cue      # paper's backtracking-cue split instead of "\n\n"
 DRY_RUN=1 bash run_pipeline.sh
 

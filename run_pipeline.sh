@@ -4,7 +4,6 @@
 # Selective Learning of Long Reasoning Traces, TRU phan Eval.
 #
 # Cac stage:
-#   setup     Tao/kiem tra conda env, cai requirements + latex2sympy + unsloth deps
 #   prep      Tai s1K-1.1 tu HuggingFace, doi ve format question/solution/answer
 #   cot       (tuy chon) Tu sinh long-CoT traces bang vLLM
 #   split     Chia solution thanh cac segment  (Attribution/segment_split.py)
@@ -12,11 +11,16 @@
 #   segments  Gop attribution -> chon important segments (get_important_segments.py)
 #   train     Selective SFT co masking (SelectiveSFT/train_mask.py)
 #
+# Dung moi truong la viec cua setup.sh, khong phai cua file nay:
+#   bash setup.sh check --for train             # xem moi truong da du chua
+#   bash setup.sh train                         # cai neu thieu
+#
 # Vi du:
-#   bash run_pipeline.sh                        # chay prep,split,ig,segments,train
-#   bash run_pipeline.sh --stages setup,split,ig,segments,train
+#   bash run_pipeline.sh                        # chay ig,segments,train
+#   bash run_pipeline.sh --stages prep,split    # chuan bi du lieu tu dau
 #   bash run_pipeline.sh --stages train --epochs 5 --lr 1e-5
 #   bash run_pipeline.sh --stages cot           # tu sinh CoT truoc khi split
+#   bash run_pipeline.sh --offline              # may khong co mang
 #   DRY_RUN=1 bash run_pipeline.sh              # chi in lenh, khong chay
 # -----------------------------------------------------------------------------
 
@@ -28,7 +32,9 @@ cd "$ROOT_DIR"
 # =============================================================================
 # Cau hinh (co the override bang bien moi truong hoac co dong lenh)
 # =============================================================================
-STAGES="${STAGES:-prep,split,ig,segments,train}"
+# Mac dinh gia dinh data/<ten>/solution_segments.jsonl da co san (stage prep va
+# split da chay xong, hoac du lieu duoc chep tay vao data/).
+STAGES="${STAGES:-ig,segments,train}"
 
 # --- Moi truong ---
 # Mac dinh KHONG dung conda: dung thang python dang active. Nhieu cloud studio
@@ -162,7 +168,7 @@ fi
 mkdir -p "$LOG_DIR"
 
 # =============================================================================
-# STAGE: setup
+# Moi truong (chi kich hoat, khong cai dat - xem setup.sh)
 # =============================================================================
 activate_env() {
   if [[ "$USE_CONDA" != "1" ]]; then
@@ -184,51 +190,17 @@ activate_env() {
     # Khong im lang chay tiep bang python khac: se chet tan sau trong thu vien
     # voi loi kho lan ra nguyen nhan (vi du numpy/sklearn ABI lech).
     die "Chua co conda env '${CONDA_ENV}'.
-      Tao no:              bash run_pipeline.sh --use-conda --stages setup
+      Tao no:              bash setup.sh eval --conda ${CONDA_ENV}
       Hoac dung env khac:  bash run_pipeline.sh --env <ten_env> ...
       Hoac dung python dang active: bo --use-conda"
   fi
-}
-
-stage_setup() {
-  banner "STAGE 0/6 - Environment setup"
-
-  if [[ "$USE_CONDA" == "1" ]]; then
-    if command -v conda >/dev/null 2>&1; then
-      if conda env list | awk '{print $1}' | grep -qx "$CONDA_ENV"; then
-        log "Conda env '${CONDA_ENV}' da ton tai."
-      else
-        log "Tao conda env '${CONDA_ENV}' (python ${PYTHON_VERSION})"
-        run conda create -y -n "$CONDA_ENV" "python=${PYTHON_VERSION}"
-      fi
-    else
-      die "USE_CONDA=1 nhung khong tim thay lenh 'conda'."
-    fi
-  else
-    warn "Cai dat truc tiep vao python dang active: $(command -v python || command -v python3 || echo none)
-      Neu moi truong da du goi thi bo qua stage 'setup' hoan toan."
-  fi
-
-  activate_env
-
-  log "Cai dependency chinh (requirements.txt)"
-  run pip install -r "${ROOT_DIR}/requirements.txt"
-
-  log "Cai latex2sympy (editable)"
-  ( cd "${ROOT_DIR}/Eval/latex2sympy" && run pip install -e . )
-
-  warn "Env '${CONDA_ENV}' chi dung cho prep/split/ig/segments (torch 2.7.1 + vLLM).
-      KHONG cai SelectiveSFT/requirements.txt vao day: unsloth can torch 2.9.
-      Stage 'train' tu goi train.sh, script do dung env rieng 'ssft_train'."
-
-  log "Setup hoan tat."
 }
 
 # =============================================================================
 # STAGE: cot (tuy chon) - tu sinh long-CoT traces cho LIMO
 # =============================================================================
 stage_cot() {
-  banner "STAGE 6/6 (tuy chon) - Sinh CoT traces bang vLLM"
+  banner "STAGE cot (tuy chon) - Sinh CoT traces bang vLLM"
 
   export CUDA_VISIBLE_DEVICES="$GPU_COT"
   export TOKENIZERS_PARALLELISM=false
@@ -259,7 +231,7 @@ stage_cot() {
 # STAGE: prep - tai dataset tu HuggingFace ve format cua pipeline
 # =============================================================================
 stage_prep() {
-  banner "STAGE 1/6 - Tai ${HF_DATASET}"
+  banner "STAGE prep - Tai ${HF_DATASET}"
 
   if [[ -s "${ROOT_DIR}/${RAW_DATA}" && "$FORCE" != "1" ]]; then
     log "${RAW_DATA} da co, bo qua (dung --force de tai lai)."
@@ -277,7 +249,7 @@ stage_prep() {
 # STAGE: split - chia solution thanh segment
 # =============================================================================
 stage_split() {
-  banner "STAGE 2/6 - Chia solution thanh segments (mode=${SEGMENT_MODE})"
+  banner "STAGE split - Chia solution thanh segments (mode=${SEGMENT_MODE})"
 
   need_file "${ROOT_DIR}/${RAW_DATA}"
   mkdir -p "$(dirname "${ROOT_DIR}/${SEGMENT_FILE}")"
@@ -296,7 +268,7 @@ stage_split() {
 # STAGE: ig - tinh Integrated Gradients attribution
 # =============================================================================
 stage_ig() {
-  banner "STAGE 3/6 - Tinh token attribution (Integrated Gradients)"
+  banner "STAGE ig - Tinh token attribution (Integrated Gradients)"
 
   need_file "${ROOT_DIR}/${SEGMENT_FILE}"
   mkdir -p "$(dirname "${ROOT_DIR}/${IG_RAW_FILE}")" "$(dirname "${ROOT_DIR}/${IG_FILE}")"
@@ -334,7 +306,7 @@ stage_ig() {
 # STAGE: segments - gop attribution, chon important segments
 # =============================================================================
 stage_segments() {
-  banner "STAGE 4/6 - Xac dinh important segments"
+  banner "STAGE segments - Xac dinh important segments"
 
   need_file "${ROOT_DIR}/${SEGMENT_FILE}"
   need_file "${ROOT_DIR}/${IG_FILE}"
@@ -357,7 +329,7 @@ stage_segments() {
 # STAGE: train - Selective SFT voi masking
 # =============================================================================
 stage_train() {
-  banner "STAGE 5/6 - Selective SFT"
+  banner "STAGE train - Selective SFT"
 
   need_file "${ROOT_DIR}/${TRAINING_FILE}"
   mkdir -p "${ROOT_DIR}/SelectiveSFT/checkpoints"
@@ -414,12 +386,9 @@ EOF
 
 START_TS=$SECONDS
 
-# Kich hoat env mot lan o top-level, tru khi dang o stage setup (setup tu activate).
-if ! has_stage setup; then
-  activate_env
-fi
+activate_env
 
-for stage in setup prep cot split ig segments train; do
+for stage in prep cot split ig segments train; do
   if has_stage "$stage"; then
     "stage_${stage}" 2>&1 | tee "${LOG_DIR}/${stage}.log"
   fi
